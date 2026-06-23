@@ -39,28 +39,28 @@ int main()
 	} else printf("PASSED: gpio 3\n");
 
 	// pwm 0, 1, 2
-	if(access("/sys/devices/platform/ocp/48300000.epwmss/48300200.pwm/pwm/", F_OK ) != 0){
+	if(access("/sys/bus/platform/devices/48300000.epwmss/48300200.pwm", F_OK ) != 0){
 		printf("ERROR:  ti-pwm driver not loaded for hrpwm0\n");
 	} else printf("PASSED: pwm0\n");
 
-	if(access("/sys/devices/platform/ocp/48302000.epwmss/48302200.pwm/pwm/", F_OK ) != 0){
+	if(access("/sys/bus/platform/devices/48302000.epwmss/48302200.pwm", F_OK ) != 0){
 		printf("ERROR:  ti-pwm driver not loaded for hrpwm1\n");
 	} else printf("PASSED: pwm1\n");
 
-	if(access("/sys/devices/platform/ocp/48304000.epwmss/48304200.pwm/pwm/", F_OK ) != 0){
+	if(access("/sys/bus/platform/devices/48304000.epwmss/48304200.pwm", F_OK ) != 0){
 		printf("ERROR:  ti-pwm driver not loaded for hrpwm2\n");
 	} else printf("PASSED: pwm2\n");
 
 	// eqep 0,1,2
-	if(access("/sys/devices/platform/ocp/48300000.epwmss/48300180.eqep/position", F_OK ) != 0){
+	if(access("/sys/bus/platform/devices/48300000.epwmss/48300180.counter/counter0", F_OK ) != 0){
 		printf("ERROR:  ti-eqep driver not loaded for eqep0\n");
 	} else printf("PASSED: eqep0\n");
 
-	if(access("/sys/devices/platform/ocp/48302000.epwmss/48302180.eqep/position", F_OK ) != 0){
+	if(access("/sys/bus/platform/devices/48302000.epwmss/48302180.counter/counter1", F_OK ) != 0){
 		printf("ERROR:  ti-eqep driver not loaded for eqep1\n");
 	} else printf("PASSED: eqep1\n");
 
-	if(access("/sys/devices/platform/ocp/48304000.epwmss/48304180.eqep/position", F_OK ) != 0){
+	if(access("/sys/bus/platform/devices/48304000.epwmss/48304180.counter/counter2", F_OK ) != 0){
 		printf("ERROR:  ti-eqep driver not loaded for eqep2\n");
 	} else printf("PASSED: eqep2\n");
 
@@ -70,16 +70,16 @@ int main()
 	} else printf("PASSED: pru-rproc\n");
 
 	// uart
-	if(access("/dev/ttyO1", F_OK ) != 0){
+	if(access("/dev/ttyS1", F_OK ) != 0){
 		printf("ERROR:  uart1 driver not loaded\n");
 	} else printf("PASSED: uart1\n");
-	if(access("/dev/ttyO2", F_OK ) != 0){
+	if(access("/dev/ttyS2", F_OK ) != 0){
 		printf("ERROR:  uart2 driver not loaded\n");
 	} else printf("PASSED: uart2\n");
-	if(access("/dev/ttyO4", F_OK ) != 0){
+	if(access("/dev/ttyS4", F_OK ) != 0){
 		printf("ERROR:  uart4 driver not loaded\n");
 	} else printf("PASSED: uart4\n");
-	if(access("/dev/ttyO5", F_OK ) != 0){
+	if(access("/dev/ttyS5", F_OK ) != 0){
 		printf("ERROR:  uart5 driver not loaded\n");
 	} else printf("PASSED: uart5\n");
 
@@ -93,7 +93,7 @@ int main()
 
 	// spi
 	if(access("/dev/spidev1.0", F_OK ) != 0){
-		if(access("/dev/spidev2.0", F_OK ) != 0){
+		if(access("/dev/spidev1.1", F_OK ) != 0){
 			printf("ERROR: spi driver not loaded\n");
 		}
 		else{
