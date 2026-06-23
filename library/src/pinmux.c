@@ -41,6 +41,8 @@
 
 int rc_pinmux_set(int pin, rc_pinmux_mode_t mode)
 {
+	return 0;// KERNEL 5.1 PATCH: The Device Tree already configured the pins.
+
 	int fd, ret;
 	char* path;
 
@@ -328,6 +330,8 @@ int rc_pinmux_set(int pin, rc_pinmux_mode_t mode)
 
 int rc_pinmux_set_default(void)
 {
+	return 0; // KERNEL 5.1 PATCH: Ignore default configuration.
+
 	int ret = 0;
 	// bb blue available pinmux
 	if(rc_model()==MODEL_BB_BLUE){
