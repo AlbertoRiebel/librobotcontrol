@@ -20,9 +20,9 @@
 
 #define MAX_BUF 64
 
-#define EQEP_BASE0 "/sys/devices/platform/ocp/48300000.epwmss/48300180.eqep"
-#define EQEP_BASE1 "/sys/devices/platform/ocp/48302000.epwmss/48302180.eqep"
-#define EQEP_BASE2 "/sys/devices/platform/ocp/48304000.epwmss/48304180.eqep"
+#define EQEP_BASE0 "/sys/bus/platform/devices/48300000.epwmss/48300180.counter/counter0"
+#define EQEP_BASE1 "/sys/bus/platform/devices/48302000.epwmss/48302180.counter/counter1"
+#define EQEP_BASE2 "/sys/bus/platform/devices/48304000.epwmss/48304180.counter/counter2"
 
 
 static int fd[3]; //store file descriptors for 3 position files
@@ -37,7 +37,7 @@ int rc_encoder_eqep_init(void)
 
 	// enable 3 subsystems
 	// subsystem 0
-	temp_fd = open(EQEP_BASE0 "/enabled", O_WRONLY);
+	temp_fd = open(EQEP_BASE0 "/count0/enable", O_WRONLY);
 	if(temp_fd<0){
 		perror("ERROR in rc_encoder_eqep_init, failed to open device driver");
 		fprintf(stderr,"Perhaps kernel or device tree is too old\n");
@@ -48,7 +48,7 @@ int rc_encoder_eqep_init(void)
 		return -1;
 	}
 	close(temp_fd);
-	temp_fd = open(EQEP_BASE0 "/position", O_RDWR);
+	temp_fd = open(EQEP_BASE0 "/count0/count", O_RDWR);
 	if(temp_fd<0){
 		perror("ERROR in rc_encoder_eqep_init, failed to open device driver");
 		fprintf(stderr,"Perhaps kernel or device tree is too old\n");
@@ -62,7 +62,7 @@ int rc_encoder_eqep_init(void)
 
 	// subsystem 1
 	if(rc_model()!=MODEL_BB_POCKET) { // Skip since not enabled on Pocket
-		temp_fd = open(EQEP_BASE1 "/enabled", O_WRONLY);
+		temp_fd = open(EQEP_BASE1 "/count0/enable", O_WRONLY);
 		if(temp_fd<0){
 			perror("ERROR in rc_encoder_eqep_init, failed to open device driver");
 			fprintf(stderr,"Perhaps kernel or device tree is too old\n");
@@ -73,7 +73,7 @@ int rc_encoder_eqep_init(void)
 			return -1;
 		}
 		close(temp_fd);
-		temp_fd = open(EQEP_BASE1 "/position", O_RDWR);
+		temp_fd = open(EQEP_BASE1 "/count0/count", O_RDWR);
 		if(temp_fd<0){
 			perror("ERROR in rc_encoder_eqep_init, failed to open device driver");
 			fprintf(stderr,"Perhaps kernel or device tree is too old\n");
@@ -87,7 +87,7 @@ int rc_encoder_eqep_init(void)
 	fd[1]=temp_fd;
 
 	// subsystem 0
-	temp_fd = open(EQEP_BASE2 "/enabled", O_WRONLY);
+	temp_fd = open(EQEP_BASE2 "/count0/enable", O_WRONLY);
 	if(temp_fd<0){
 		perror("ERROR in rc_encoder_eqep_init, failed to open device driver");
 		fprintf(stderr,"Perhaps kernel or device tree is too old\n");
@@ -98,7 +98,7 @@ int rc_encoder_eqep_init(void)
 		return -1;
 	}
 	close(temp_fd);
-	temp_fd = open(EQEP_BASE2 "/position", O_RDWR);
+	temp_fd = open(EQEP_BASE2 "/count0/count", O_RDWR);
 	if(temp_fd<0){
 		perror("ERROR in rc_encoder_eqep_init, failed to open device driver");
 		fprintf(stderr,"Perhaps kernel or device tree is too old\n");
