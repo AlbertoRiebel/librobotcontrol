@@ -593,11 +593,31 @@ int __init_magnetometer(int cal_mode)
 {
 	uint8_t raw[3];	// calibration data stored here
 
+	// --- POWER AND TIMING PATCH START ---
+        // 1. Ensure main chip I2C address
+        rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
+
+        // 2. Wake up the chip and force internal clock (Command 0x6B 0x00)
+        rc_i2c_write_byte(config.i2c_bus, 0x6B, 0x00);
+        rc_usleep(50000); // 50ms to stabilize power
+
+        // 3. Disable I2C Master to ensure it doesn't hold the bus (Command 0x6A 0x00)
+        rc_i2c_write_byte(config.i2c_bus, 0x6A, 0x00);
+        rc_usleep(50000);
+        // --- PATCH END ---
+
 	// Enable i2c bypass to allow talking to magnetometer
 	if(__mpu_set_bypass(1)){
 		fprintf(stderr,"failed to set mpu9250 into bypass i2c mode\n");
 		return -1;
 	}
+
+	// --- AK8963 STARTUP PATCH START ---
+        //CRITICAL! Give the magnetometer time to start his own
+        //system after the bypass door opens.
+        rc_usleep(100000);
+        // --- PATCH END ---
+
 	// magnetometer is actually a separate device with its
 	// own address inside the mpu9250
 	if(rc_i2c_set_device_address(config.i2c_bus, AK8963_ADDR)){
@@ -2847,6 +2867,11 @@ int rc_mpu_calibrate_mag_routine(rc_mpu_config_t conf)
 
 	// sample data
 	i = 0;
+
+	// --- 	RACE CONDITION PATCH START ---
+        rc_usleep(50000); // Wait 50ms for the ADC to end its first reading
+        // --- PATCH END ---
+
 	while(i<samples){
 		if(rc_mpu_read_mag(&imu_data)<0){
 			fprintf(stderr,"ERROR: failed to read magnetometer\n");
