@@ -55,28 +55,24 @@ static int ssindex[3]; // index given by the kernel to each pwm chip when in mod
 // --- KERNEL 5.10 PATCH START ---
 
 // Chip matrix mapping
-static int get_chip(int ss, int ch_int) {
-        if(ss==0 && ch_int==0) return 0; // SS0 Channel A
-        if(ss==0 && ch_int==1) return 3; // SS0 Channel B
-        if(ss==1 && ch_int==0) return 1; // SS1 Channel A
-        if(ss==1 && ch_int==1) return 5; // SS1 Channel B
-        if(ss==2 && ch_int==0) return 2; // SS2 Channel A
-        if(ss==2 && ch_int==1) return 7; // SS2 Channel B
+static int get_chip(int ss) {
+        if(ss==0) return 3; // SS0 eHRPWM (Handles Channels A and B)
+        if(ss==1) return 5; // SS1 eHRPWM (Handles Channels A and B - Motors 3 and 4)
+        if(ss==2) return 7; // SS2 eHRPWM (Handles Channels A and B - Motors 1 and 2)
         return -1;
 }
 
 static int __export_channels(int ss) {
         int export_fd;
         char buf[MAXBUF];
-        int chips[2] = {get_chip(ss, 0), get_chip(ss, 1)};
+        int chip = get_chip(ss);
 
-        for(int i=0; i<2; i++){
-                snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/export", chips[i]);
-                export_fd = open(buf, O_WRONLY);
-                if(export_fd >= 0){
-                        write(export_fd, "0", 2); // In 5.10 the internal channel is always 0
-                        close(export_fd);
-                }
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/export", chip);
+        export_fd = open(buf, O_WRONLY);
+        if(export_fd >= 0){
+                write(export_fd, "0", 2); // Export Channel A (pwm0)
+                write(export_fd, "1", 2); // Export Channel B (pwm1)
+                close(export_fd);
         }
         return 0;
 }
@@ -84,15 +80,14 @@ static int __export_channels(int ss) {
 static int __unexport_channels(int ss) {
         int unexport_fd;
         char buf[MAXBUF];
-        int chips[2] = {get_chip(ss, 0), get_chip(ss, 1)};
+        int chip = get_chip(ss);
 
-        for(int i=0; i<2; i++){
-                snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/unexport", chips[i]);
-                unexport_fd = open(buf, O_WRONLY);
-                if(unexport_fd >= 0){
-                        write(unexport_fd, "0", 2);
-                        close(unexport_fd);
-                }
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/unexport", chip);
+        unexport_fd = open(buf, O_WRONLY);
+        if(unexport_fd >= 0){
+                write(unexport_fd, "0", 2);
+                write(unexport_fd, "1", 2);
+                close(unexport_fd);
         }
         return 0;
 }
@@ -111,32 +106,31 @@ int rc_pwm_init(int ss, int frequency) {
 
         rc_usleep(600000); // Give Linux time to create the virtual files
 
-        int chipA = get_chip(ss, 0);
-        int chipB = get_chip(ss, 1);
+        int chip = get_chip(ss);
 
         // Open Duty Cycle
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/duty_cycle", chipA);
+	snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/duty_cycle", chip);
         dutyA_fd[ss] = open(buf,O_WRONLY);
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/duty_cycle", chipB);
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm1/duty_cycle", chip);
         dutyB_fd[ss] = open(buf,O_WRONLY);
         if(dutyA_fd[ss]==-1 || dutyB_fd[ss]==-1) return -1;
 
-        // Open Enable
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/enable", chipA);
+	// Open Enable
+	snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/enable", chip);
         enableA_fd = open(buf,O_WRONLY);
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/enable", chipB);
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm1/enable", chip);
         enableB_fd = open(buf,O_WRONLY);
 
         // Open Period
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/period", chipA);
+	snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/period", chip);
         periodA_fd = open(buf,O_WRONLY);
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/period", chipB);
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm1/period", chip);
         periodB_fd = open(buf,O_WRONLY);
 
         // Open Polarity
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/polarity", chipA);
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/polarity", chip);
         polarityA_fd = open(buf,O_WRONLY);
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/polarity", chipB);
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm1/polarity", chip);
         polarityB_fd = open(buf,O_WRONLY);
 
         // Configure Period
@@ -175,12 +169,11 @@ int rc_pwm_cleanup(int ss) {
 
         if(ss<0 || ss>2 || init_flag[ss]==0) return 0;
 
-        int chipA = get_chip(ss, 0);
-        int chipB = get_chip(ss, 1);
+        int chip = get_chip(ss);
 
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/enable", chipA);
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/enable", chip);
         enableA_fd = open(buf,O_WRONLY);
-        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm0/enable", chipB);
+        snprintf(buf, sizeof(buf), SYS_DIR "/pwmchip%d/pwm1/enable", chip);
         enableB_fd = open(buf,O_WRONLY);
 
         write(dutyA_fd[ss], "0", 2);
