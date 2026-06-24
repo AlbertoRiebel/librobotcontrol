@@ -15,7 +15,7 @@ PRU1_FW		:= am335x-pru1-rc-servo-fw
 TARGET0		:= $(BIN_DIR)/$(PRU0_FW)
 TARGET1		:= $(BIN_DIR)/$(PRU1_FW)
 TARGETS		:= $(TARGET0) $(TARGET1)
-LINK_PRU1_FW	:= $(BUILD_DIR)/pru1-servo.object
+LINK_PRU1_FW	:=
 LINK_PRU0_FW	:= $(BUILD_DIR)/pru0-encoder.object
 
 RM		:= rm -f -r
@@ -62,11 +62,10 @@ $(TARGET0): $(BUILD_DIR)/main_pru0.object $(LINK_PRU0_FW)
 	@mkdir -p $(BIN_DIR)
 	@$(LNKPRU) -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $@ $^  $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS) $^
 
-$(TARGET1): $(BUILD_DIR)/main_pru1.object $(LINK_PRU1_FW)
+$(TARGET1): $(BUILD_DIR)/main_pru1.object
 	@echo 'LD	$^'
 	@mkdir -p $(BIN_DIR)
-	@$(LNKPRU) -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $@ $^  $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS) $^
-
+	@$(LNKPRU) -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $@ $^  $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS)
 
 $(BUILD_DIR)/main_pru0.object: $(SRC_DIR)/main_pru0.c
 	@mkdir -p $(BUILD_DIR)
@@ -92,7 +91,7 @@ $(BUILD_DIR)/pru0-encoder.object: $(SRC_DIR)/pru0-encoder.asm
 
 
 
-install:
+install: all
 	@$(INSTALLDIR) $(DESTDIR)/lib/firmware
 	@$(INSTALLNONEXEC) $(TARGET0) $(DESTDIR)/lib/firmware/
 	@$(INSTALLNONEXEC) $(TARGET1) $(DESTDIR)/lib/firmware/
@@ -101,6 +100,7 @@ install:
 
 clean:
 	@$(RM) $(BUILD_DIR)
+	@$(RM) $(BIN_DIR)
 	@$(RM) main_pru1.asm main_pru0.asm file.map
 	@echo 'PRU Firmware Cleanup Complete'
 
