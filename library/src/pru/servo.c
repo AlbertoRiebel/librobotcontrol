@@ -49,7 +49,15 @@ void rc_servo_cleanup(void)
                 rc_gpio_set_value(GPIO_POWER_PIN, 0);
                 rc_gpio_cleanup(GPIO_POWER_PIN);
         }
-        if(pru_fd >= 0) close(pru_fd);
+        /* Enviar mensaje de reset al PRU antes de cerrar */
+        if(pru_fd >= 0){
+                uint32_t payload[2] = { 0, 0 };
+                write(pru_fd, payload, sizeof(payload));
+                usleep(10000);
+                close(pru_fd);
+                pru_fd = -1;
+        }
+        usleep(100000);
         init_flag = 0;
 }
 
@@ -71,7 +79,7 @@ int rc_servo_send_pulse_us(int ch, int us)
 {
         if(ch < 0 || ch > RC_SERVO_CH_MAX || init_flag == 0) return -1;
 
-        uint32_t num_loops = (uint32_t)(us * 200);
+        uint32_t num_loops = (uint32_t)((us * 93712.0) / 23440.0);
         uint32_t payload[2] = { (uint32_t)ch, num_loops };
 
         if(write(pru_fd, payload, sizeof(payload)) < 0) return -1;
