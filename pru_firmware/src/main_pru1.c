@@ -47,44 +47,41 @@ void main(void) {
     while (pru_rpmsg_channel(RPMSG_NS_CREATE, &transport,
                              CHAN_NAME, CHAN_PORT) != PRU_RPMSG_SUCCESS);
 
+    uint32_t loop_count = 0;
+    uint32_t loops_per_period = 93712; /* ~20ms a ~3MHz efectivos del loop */
+
     while (1) {
-        now = PRU1_CTRL.CYCLE;
-        uint32_t delta = now - last_cycle;
-        last_cycle = now;
+        loop_count++;
+        if (loop_count >= loops_per_period) loop_count = 0;
 
-        if (delta >= PERIOD_CYCLES) {
-            elapsed = 0;
-        } else {
-            elapsed += delta;
-            while (elapsed >= PERIOD_CYCLES) elapsed -= PERIOD_CYCLES;
-        }
-
-        if (__R31 & HOST_INT) {
-            CT_INTC.SICR_bit.STS_CLR_IDX = FROM_ARM_HOST;
-            while (pru_rpmsg_receive(&transport, &src, &dst,
-                                     payload, &len) == PRU_RPMSG_SUCCESS) {
-                if (len == 8) {
-                    ch    = ((uint32_t*)payload)[0];
-                    loops = ((uint32_t*)payload)[1];
-                    if (ch >= 1 && ch <= 8) {
-                        ch_loops[ch - 1] = loops;
-                    } else if (ch == 0) {
-                        for (i = 0; i < 8; i++) ch_loops[i] = loops;
+        /* Revisar mensajes solo cada N iteraciones para no saturar */
+        if ((loop_count & 0xFF) == 0) {
+            if (__R31 & HOST_INT) {
+                CT_INTC.SICR_bit.STS_CLR_IDX = FROM_ARM_HOST;
+                if (pru_rpmsg_receive(&transport, &src, &dst,
+                                      payload, &len) == PRU_RPMSG_SUCCESS) {
+                    if (len == 8) {
+                        ch    = ((uint32_t*)payload)[0];
+                        loops = ((uint32_t*)payload)[1];
+                        if (ch >= 1 && ch <= 8) {
+                            ch_loops[ch - 1] = loops;
+                        } else if (ch == 0) {
+                            for (i = 0; i < 8; i++) ch_loops[i] = loops;
+                        }
                     }
                 }
             }
-            last_cycle = PRU1_CTRL.CYCLE;
         }
 
         out_mask = 0;
-        if (elapsed < ch_loops[0]) out_mask |= (1 << 8);
-        if (elapsed < ch_loops[1]) out_mask |= (1 << 10);
-        if (elapsed < ch_loops[2]) out_mask |= (1 << 9);
-        if (elapsed < ch_loops[3]) out_mask |= (1 << 11);
-        if (elapsed < ch_loops[4]) out_mask |= (1 << 6);
-        if (elapsed < ch_loops[5]) out_mask |= (1 << 7);
-        if (elapsed < ch_loops[6]) out_mask |= (1 << 4);
-        if (elapsed < ch_loops[7]) out_mask |= (1 << 5);
+        if (loop_count < ch_loops[0]) out_mask |= (1 << 8);
+        if (loop_count < ch_loops[1]) out_mask |= (1 << 10);
+        if (loop_count < ch_loops[2]) out_mask |= (1 << 9);
+        if (loop_count < ch_loops[3]) out_mask |= (1 << 11);
+        if (loop_count < ch_loops[4]) out_mask |= (1 << 6);
+        if (loop_count < ch_loops[5]) out_mask |= (1 << 7);
+        if (loop_count < ch_loops[6]) out_mask |= (1 << 4);
+        if (loop_count < ch_loops[7]) out_mask |= (1 << 5);
 
         __R30 = out_mask;
     }

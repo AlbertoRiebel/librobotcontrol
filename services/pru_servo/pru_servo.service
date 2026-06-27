@@ -1,0 +1,16 @@
+[Unit]
+Description=PRU1 Servo RPMsg firmware loader
+After=systemd-modules-load.service sys-class-remoteproc-remoteproc2.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/mkdir -p /dev/remoteproc
+ExecStartPre=/bin/sh -c "ln -sfT /sys/class/remoteproc/remoteproc2 /dev/remoteproc/pruss-core1 2>/dev/null || true"
+ExecStartPre=/bin/sh -c "echo stop > /dev/remoteproc/pruss-core1/state 2>/dev/null || true"
+ExecStartPre=/bin/sleep 2
+ExecStart=/bin/sh -c "echo start > /dev/remoteproc/pruss-core1/state"
+ExecStop=/bin/sh -c "echo stop > /dev/remoteproc/pruss-core1/state"
+
+[Install]
+WantedBy=multi-user.target
