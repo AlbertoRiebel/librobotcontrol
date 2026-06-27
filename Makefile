@@ -10,6 +10,7 @@ all:
 	@make -C examples --no-print-directory
 	@make -C services/rc_battery_monitor --no-print-directory
 	@make -C services/robotcontrol --no-print-directory
+	@make -C services/pru_servo --no-print-directory
 
 install:
 	@$(INSTALLDIR) $(DESTDIR)$(prefix)/share/robotcontrol
@@ -21,7 +22,7 @@ install:
 	@make -C examples -s install
 	@make -C services/rc_battery_monitor -s install
 	@make -C services/robotcontrol -s install
-
+	@make -C services/pru_servo -s install
 
 clean:
 	@make -C pru_firmware -s clean
@@ -29,6 +30,7 @@ clean:
 	@make -C examples -s clean
 	@make -C services/rc_battery_monitor -s clean
 	@make -C services/robotcontrol -s clean
+	@make -C services/pru_servo -s clean
 	@make -C rc_project_template -s clean
 	@$(RM) debian/librobotcontrol
 	@$(RM) debian/librobotcontrol.postrm.debhelper
@@ -46,6 +48,7 @@ uninstall:
 	@make -C examples -s uninstall
 	@make -C services/rc_battery_monitor -s uninstall
 	@make -C services/robotcontrol -s uninstall
+	@make -C services/pru_servo -s uninstall
 	@$(RM) $(DESTDIR)$(prefix)/bin/configure_robotics_dt
 	@$(RM) $(DESTDIR)$(prefix)/share/robotcontrol
 	@$(RM) $(DESTDIR)/var/lib/robotcontrol
