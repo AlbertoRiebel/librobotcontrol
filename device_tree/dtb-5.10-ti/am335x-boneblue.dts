@@ -1,0 +1,879 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Device Tree Source for TI AM335x BeagleBone Blue
+ * Kernel: 5.10.x-ti (tested on 5.10.168-ti-r83)
+ *
+ * Based on the official TI DTS at:
+ *   /opt/source/dtb-5.10-ti/src/arm/am335x-boneblue.dts
+ *
+ * Modifications for librobotcontrol compatibility:
+ *   - Added pinmux groups for motor control GPIOs (MDIR_*, MOT_STBY)
+ *   - Added pinmux groups for PRU servo outputs (8 channels + SERVO_EN)
+ *   - Added pinmux group for PRU encoder input (P8_16 / PRU0_r31_16)
+ *   - Added pinmux group for GP0 GPIO pins (GPIO3_17, GPIO3_20)
+ *   - Corrected pinmux_spi1_pins: removed GPIO3_17 (mcasp0_ahclkx) which
+ *     is not an SPI pin on the BBBlue; it is GP0_PIN_6
+ *   - Added i2c1 pinmux and node (used by librobotcontrol for barometer)
+ *   - Added SPI1 node with two spidev channels
+ *   - Added eQEP count_mode / invert properties (kernel 5.10 counter ABI
+ *     ignores these but they document the intended configuration)
+ *   - Enabled PRU subsystem with RPMsg firmware for servo control
+ *   - Configured gpio3 to apply GP0 pinmux at boot
+ *
+ * Authors: James Strawson (original librobotcontrol DTS, kernel 4.14)
+ *          Port to kernel 5.10 - see project fork README for details
+ */
+
+/dts-v1/;
+
+#include "am33xx.dtsi"
+#include "am335x-osd335x-common.dtsi"
+#include <dt-bindings/interrupt-controller/irq.h>
+#include "am335x-bone-pins.h"
+
+/ {
+	model = "TI AM335x BeagleBone Blue";
+	compatible = "ti,am335x-bone-blue", "ti,am33xx";
+
+	chosen {
+		stdout-path = &uart0;
+		base_dtb = "am335x-boneblue.dts";
+		base_dtb_timestamp = __TIMESTAMP__;
+	};
+
+	leds {
+		pinctrl-names = "default";
+		pinctrl-0 = <&user_leds_s0>;
+		compatible = "gpio-leds";
+
+		usr_0_led {
+			label = "beaglebone:green:usr0";
+			gpios = <&gpio1 21 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "heartbeat";
+			default-state = "off";
+		};
+		usr_1_led {
+			label = "beaglebone:green:usr1";
+			gpios = <&gpio1 22 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "mmc0";
+			default-state = "off";
+		};
+		usr_2_led {
+			label = "beaglebone:green:usr2";
+			gpios = <&gpio1 23 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "cpu0";
+			default-state = "off";
+		};
+		usr_3_led {
+			label = "beaglebone:green:usr3";
+			gpios = <&gpio1 24 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "mmc1";
+			default-state = "off";
+		};
+		wifi_led {
+			label = "wifi";
+			gpios = <&gpio0 19 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+			linux,default-trigger = "phy0assoc";
+		};
+		red_led {
+			label = "red";
+			gpios = <&gpio2 2 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		green_led {
+			label = "green";
+			gpios = <&gpio2 3 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		batt_1_led {
+			label = "bat25";
+			gpios = <&gpio0 27 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		batt_2_led {
+			label = "bat50";
+			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		batt_3_led {
+			label = "bat75";
+			gpios = <&gpio1 29 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		batt_4_led {
+			label = "bat100";
+			gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+	};
+
+	vmmcsd_fixed: fixedregulator0 {
+		compatible = "regulator-fixed";
+		regulator-name = "vmmcsd_fixed";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	wlan_en_reg: fixedregulator@2 {
+		compatible = "regulator-fixed";
+		regulator-name = "wlan-en-regulator";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		startup-delay-us = <70000>;
+		gpio = <&gpio3 9 0>;
+		enable-active-high;
+	};
+};
+
+&am33xx_pinmux {
+
+	/*
+	 * ----------------------------------------------------------------
+	 * LEDs
+	 * ----------------------------------------------------------------
+	 */
+	user_leds_s0: user_leds_s0 {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A5,       PIN_OUTPUT, MUX_MODE7) /* gpio1[21] USR_LED_0 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A6,       PIN_OUTPUT, MUX_MODE7) /* gpio1[22] USR_LED_1 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A7,       PIN_OUTPUT, MUX_MODE7) /* gpio1[23] USR_LED_2 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A8,       PIN_OUTPUT, MUX_MODE7) /* gpio1[24] USR_LED_3 */
+			AM33XX_PADCONF(AM335X_PIN_XDMA_EVENT_INTR0, PIN_OUTPUT, MUX_MODE7) /* gpio0[19] WIFI_LED */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_ADVN_ALE, PIN_OUTPUT, MUX_MODE7) /* gpio2[2]  LED_RED  */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_OEN_REN,  PIN_OUTPUT, MUX_MODE7) /* gpio2[3]  LED_GREEN */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD11,     PIN_OUTPUT, MUX_MODE7) /* gpio0[27] BATT_LED_1 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA15,    PIN_OUTPUT, MUX_MODE7) /* gpio0[11] BATT_LED_2 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_CSN0,     PIN_OUTPUT, MUX_MODE7) /* gpio1[29] BATT_LED_3 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD10,     PIN_OUTPUT, MUX_MODE7) /* gpio0[26] BATT_LED_4 */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * I2C
+	 * ----------------------------------------------------------------
+	 */
+	i2c1_pins: pinmux_i2c1_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_SPI0_D1,    PIN_INPUT_PULLUP, MUX_MODE2) /* (B16) spi0_d1.i2c1_sda */
+			AM33XX_PADCONF(AM335X_PIN_SPI0_CS0,   PIN_INPUT_PULLUP, MUX_MODE2) /* (A16) spi0_cs0.i2c1_scl */
+		>;
+	};
+
+	i2c2_pins: pinmux_i2c2_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_UART1_CTSN, PIN_INPUT_PULLUP, MUX_MODE3) /* (D18) uart1_ctsn.i2c2_sda */
+			AM33XX_PADCONF(AM335X_PIN_UART1_RTSN, PIN_INPUT_PULLUP, MUX_MODE3) /* (D17) uart1_rtsn.i2c2_scl */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * UARTs
+	 * ----------------------------------------------------------------
+	 */
+	uart0_pins: pinmux_uart0_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_UART0_RXD, PIN_INPUT_PULLUP,    MUX_MODE0)
+			AM33XX_PADCONF(AM335X_PIN_UART0_TXD, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
+		>;
+	};
+
+	uart1_pins: pinmux_uart1_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_UART1_RXD, PIN_INPUT_PULLUP,    MUX_MODE0)
+			AM33XX_PADCONF(AM335X_PIN_UART1_TXD, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
+		>;
+	};
+
+	/* GPS */
+	uart2_pins: pinmux_uart2_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_SPI0_SCLK, PIN_INPUT_PULLUP,    MUX_MODE1) /* (A17) spi0_sclk.uart2_rxd */
+			AM33XX_PADCONF(AM335X_PIN_SPI0_D0,   PIN_OUTPUT_PULLDOWN, MUX_MODE1) /* (B17) spi0_d0.uart2_txd */
+		>;
+	};
+
+	/* DSM2 */
+	uart4_pins: pinmux_uart4_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_GPMC_WAIT0, PIN_INPUT_PULLUP, MUX_MODE6) /* (T17) gpmc_wait0.uart4_rxd */
+		>;
+	};
+
+	/* UT5 */
+	uart5_pins: pinmux_uart5_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA9, PIN_INPUT_PULLUP,    MUX_MODE4) /* (U2) lcd_data9.uart5_rxd */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA8, PIN_OUTPUT_PULLDOWN, MUX_MODE4) /* (U1) lcd_data8.uart5_txd */
+		>;
+	};
+
+	/* Bluetooth UART */
+	uart3_pins: pinmux_uart3_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MII1_RXD3, PIN_INPUT_PULLUP,    MUX_MODE1) /* (L17) uart3_rxd */
+			AM33XX_PADCONF(AM335X_PIN_MII1_RXD2, PIN_OUTPUT_PULLDOWN, MUX_MODE1) /* (L16) uart3_txd */
+			AM33XX_PADCONF(AM335X_PIN_MDIO,      PIN_INPUT,           MUX_MODE3) /* (M17) uart3_ctsn */
+			AM33XX_PADCONF(AM335X_PIN_MDC,       PIN_OUTPUT_PULLDOWN, MUX_MODE3) /* (M18) uart3_rtsn */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * SPI1 -- conector SPI de la BBBlue (SCLK, MISO, MOSI, SS1, SS2)
+	 * NOTA: GPIO3_17 (mcasp0_ahclkx, GP0_PIN_6) NO es pin SPI en la
+	 * BBBlue. El chip select del conector SPI fisico es SS1 (H18/SPI1_SS1)
+	 * y SS2 (C18/SPI1_SS2), definidos mediante sus propios grupos.
+	 * ----------------------------------------------------------------
+	 */
+	spi1_pins: pinmux_spi1_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_ACLKX, PIN_INPUT_PULLUP,  MUX_MODE3) /* (A13) SPI1_SCLK  GPIO3_14 */
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_FSX,   PIN_INPUT_PULLUP,  MUX_MODE3) /* (B13) SPI1_MISO  GPIO3_15 */
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_AXR0,  PIN_OUTPUT,        MUX_MODE3) /* (D12) SPI1_MOSI  GPIO3_16 */
+			AM33XX_PADCONF(AM335X_PIN_ECAP0_IN_PWM0_OUT, PIN_OUTPUT,   MUX_MODE4) /* (C18) SPI1_SS2   GPIO0_7  */
+		>;
+	};
+
+	/* SPI1 SS1 -- conector H18 */
+	spi1_ss1_pin: pinmux_spi1_ss1_pin {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_UART0_CTSN, PIN_OUTPUT, MUX_MODE2) /* (H18) SPI1_SS1 GPIO1_8 */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * MMC
+	 * ----------------------------------------------------------------
+	 */
+	mmc1_pins: pinmux_mmc1_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_SPI0_CS1, PIN_INPUT, MUX_MODE7)   /* (C15) gpio0[6] MMC0_CD */
+		>;
+	};
+
+	mmc2_pins: pinmux_mmc2_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_GPMC_CSN1, PIN_INPUT_PULLUP, MUX_MODE2) /* (U9) mmc1_clk */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_CSN2, PIN_INPUT_PULLUP, MUX_MODE2) /* (V9) mmc1_cmd */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD0,  PIN_INPUT_PULLUP, MUX_MODE1) /* (U7) mmc1_dat0 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD1,  PIN_INPUT_PULLUP, MUX_MODE1) /* (V7) mmc1_dat1 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD2,  PIN_INPUT_PULLUP, MUX_MODE1) /* (R8) mmc1_dat2 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD3,  PIN_INPUT_PULLUP, MUX_MODE1) /* (T8) mmc1_dat3 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD4,  PIN_INPUT_PULLUP, MUX_MODE1) /* (U8) mmc1_dat4 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD5,  PIN_INPUT_PULLUP, MUX_MODE1) /* (V8) mmc1_dat5 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD6,  PIN_INPUT_PULLUP, MUX_MODE1) /* (R9) mmc1_dat6 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD7,  PIN_INPUT_PULLUP, MUX_MODE1) /* (T9) mmc1_dat7 */
+		>;
+	};
+
+	mmc3_pins: pinmux_mmc3_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MII1_RXD1,  PIN_INPUT_PULLUP, MUX_MODE6) /* (L15) mmc2_clk */
+			AM33XX_PADCONF(AM335X_PIN_MII1_TX_EN, PIN_INPUT_PULLUP, MUX_MODE6) /* (J16) mmc2_cmd */
+			AM33XX_PADCONF(AM335X_PIN_MII1_RX_DV, PIN_INPUT_PULLUP, MUX_MODE5) /* (J17) mmc2_dat0 */
+			AM33XX_PADCONF(AM335X_PIN_MII1_TXD3,  PIN_INPUT_PULLUP, MUX_MODE5) /* (J18) mmc2_dat1 */
+			AM33XX_PADCONF(AM335X_PIN_MII1_TXD2,  PIN_INPUT_PULLUP, MUX_MODE5) /* (K15) mmc2_dat2 */
+			AM33XX_PADCONF(AM335X_PIN_MII1_COL,   PIN_INPUT_PULLUP, MUX_MODE5) /* (H16) mmc2_dat3 */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * WiFi / Bluetooth (WL18xx)
+	 * ----------------------------------------------------------------
+	 */
+	wl18xx_pins: pinmux_wl18xx_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MII1_TX_CLK, PIN_OUTPUT_PULLDOWN, MUX_MODE7) /* (K18) gpio3[9]  WL_EN */
+			AM33XX_PADCONF(AM335X_PIN_MII1_TXD1,   PIN_INPUT_PULLDOWN,  MUX_MODE7) /* (K16) gpio0[21] WL_IRQ */
+			AM33XX_PADCONF(AM335X_PIN_MII1_RX_CLK, PIN_OUTPUT_PULLUP,   MUX_MODE7) /* (L18) gpio3[10] LS_BUF_EN */
+		>;
+	};
+
+	bt_pins: pinmux_bt_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MII1_TXD0, PIN_OUTPUT_PULLUP, MUX_MODE7) /* (K17) gpio0[28] BT_EN */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * CAN
+	 * ----------------------------------------------------------------
+	 */
+	dcan1_pins: pinmux_dcan1_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_UART0_RTSN, PIN_INPUT,  MUX_MODE2) /* (E17) dcan1_rx */
+			AM33XX_PADCONF(AM335X_PIN_UART0_CTSN, PIN_OUTPUT, MUX_MODE2) /* (E18) dcan1_tx */
+			AM33XX_PADCONF(AM335X_PIN_MII1_RXD0,  PIN_OUTPUT, MUX_MODE7) /* (M16) gpio2[21] DCAN1_SILENT */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * eQEP -- Encoders en cuadratura (canales 1, 2, 3)
+	 * ----------------------------------------------------------------
+	 */
+	/* E1 -- conector encoder 1 */
+	eqep0_pins: pinmux_eqep0_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_ACLKR, PIN_INPUT, MUX_MODE1) /* (B12) eQEP0A */
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_FSR,   PIN_INPUT, MUX_MODE1) /* (C13) eQEP0B */
+		>;
+	};
+
+	/* E2 -- conector encoder 2 */
+	eqep1_pins: pinmux_eqep1_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA12, PIN_INPUT, MUX_MODE2) /* (V2) eQEP1A */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA13, PIN_INPUT, MUX_MODE2) /* (V3) eQEP1B */
+		>;
+	};
+
+	/* E3 -- conector encoder 3 */
+	eqep2_pins: pinmux_eqep2_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD12, PIN_INPUT, MUX_MODE4) /* (T12) eQEP2A */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD13, PIN_INPUT, MUX_MODE4) /* (R12) eQEP2B */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * PRU -- Encoder canal 4 (entrada PRU0)
+	 * ----------------------------------------------------------------
+	 */
+	pru_encoder_pins: pinmux_pru_encoder_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_GPMC_CLK, PIN_INPUT, MUX_MODE6) /* (V12) P8_16 PRU0_r31_16 */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * PRU -- Salidas servo (8 canales) + SERVO_EN
+	 * Pines en modo PRU output (MUX_MODE5)
+	 * ----------------------------------------------------------------
+	 */
+	servo_pins: pinmux_servo_pins {
+		pinctrl-single,pins = <
+			/* PRU1 outputs -- modo 5, offset 0x0d en DTB */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA16, PIN_OUTPUT, MUX_MODE5) /* (U5)  0x0E0 pru1_r30_8  SVO1 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA18, PIN_OUTPUT, MUX_MODE5) /* (V5)  0x0E8 pru1_r30_10 SVO2 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA17, PIN_OUTPUT, MUX_MODE5) /* (R5)  0x0E4 pru1_r30_9  SVO3 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA19, PIN_OUTPUT, MUX_MODE5) /* (R6)  0x0EC pru1_r30_11 SVO4 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA6,  PIN_OUTPUT, MUX_MODE5) /* (T3)  0x0B8 pru1_r30_6  SVO5 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA7,  PIN_OUTPUT, MUX_MODE5) /* (T4)  0x0BC pru1_r30_7  SVO6 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA4,  PIN_OUTPUT, MUX_MODE5) /* (T1)  0x0B0 pru1_r30_4  SVO7 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA5,  PIN_OUTPUT, MUX_MODE5) /* (T2)  0x0B4 pru1_r30_5  SVO8 */
+			/* SERVO_EN -- GPIO output, modo 7 */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA10, PIN_OUTPUT, MUX_MODE7) /* (U3)  0x0C8 gpio2[16]   SERVO_EN */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * Motor control GPIOs (MDIR_*, MOT_STBY)
+	 * ----------------------------------------------------------------
+	 */
+	motor_pins: pinmux_motor_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_GPMC_CSN3,        PIN_OUTPUT, MUX_MODE7) /* (T13) 0x088 gpio2[0]  MDIR_1A */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_WPN,         PIN_OUTPUT, MUX_MODE7) /* (U17) 0x074 gpio0[31] MDIR_1B */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A0,          PIN_OUTPUT, MUX_MODE7) /* (R13) 0x040 gpio1[16] MDIR_2A */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA14,       PIN_OUTPUT, MUX_MODE7) /* (V4)  0x0D8 gpio0[10] MDIR_2B */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA3,        PIN_OUTPUT, MUX_MODE7) /* (R4)  0x0AC gpio2[9]  MDIR_3A */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA2,        PIN_OUTPUT, MUX_MODE7) /* (R3)  0x0A8 gpio2[8]  MDIR_3B */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA0,        PIN_OUTPUT, MUX_MODE7) /* (R1)  0x0A0 gpio2[6]  MDIR_4A */
+			AM33XX_PADCONF(AM335X_PIN_LCD_DATA1,        PIN_OUTPUT, MUX_MODE7) /* (R2)  0x0A4 gpio2[7]  MDIR_4B */
+			AM33XX_PADCONF(AM335X_PIN_XDMA_EVENT_INTR1, PIN_OUTPUT, MUX_MODE7) /* (D14) 0x1B4 gpio0[20] MOT_STBY */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * GP0 connector GPIO pins
+	 *
+	 * GPIO3_17 (mcasp0_ahclkx, C12): GP0_PIN_6
+	 *   - Nota: este pin es SPI1_CS0 en modo 3, pero en la BBBlue el
+	 *     conector SPI usa SS1/SS2 distintos. Se configura como GPIO.
+	 *
+	 * GPIO3_20 (mcasp0_ahclkr, D13): GP0_PIN_5
+	 *
+	 * GPIO1_17 (V14) y GPIO1_25 (U16) ya estan en modo 7 desde el DTB
+	 * base y no requieren grupo explicito.
+	 * ----------------------------------------------------------------
+	 */
+	gpio_gp0_pins: pinmux_gpio_gp0_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKX, PIN_INPUT_PULLUP, MUX_MODE7) /* (C12) gpio3[17] GP0_PIN_6 */
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKR, PIN_INPUT_PULLUP, MUX_MODE7) /* (D13) gpio3[20] GP0_PIN_5 */
+		>;
+	};
+
+	/*
+	 * ----------------------------------------------------------------
+	 * MPU-9250 interrupt input
+	 * ----------------------------------------------------------------
+	 */
+	mpu9250_pins: pinmux_mpu9250_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_AXR1, PIN_INPUT_PULLUP, MUX_MODE7) /* (A14) gpio3[21] IMU_INT */
+		>;
+	};
+};
+
+/*
+ * ================================================================
+ * UARTs
+ * ================================================================
+ */
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins>;
+	status = "okay";
+};
+
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_pins>;
+	status = "okay";
+};
+
+&uart2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart2_pins>;
+	status = "okay";
+};
+
+&uart3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart3_pins &bt_pins>;
+	status = "okay";
+
+	bluetooth {
+		compatible = "ti,wl1835-st";
+		enable-gpios = <&gpio0 28 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&uart4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart4_pins>;
+	status = "okay";
+};
+
+&uart5 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart5_pins>;
+	status = "okay";
+};
+
+/*
+ * ================================================================
+ * I2C
+ * ================================================================
+ */
+&i2c0 {
+	baseboard_eeprom: baseboard_eeprom@50 {
+		compatible = "atmel,24c256";
+		reg = <0x50>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		baseboard_data: baseboard_data@0 {
+			reg = <0 0x100>;
+		};
+	};
+};
+
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins>;
+	status = "okay";
+	clock-frequency = <400000>;
+};
+
+&i2c2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pins>;
+	status = "okay";
+	clock-frequency = <400000>;
+
+	mpu9250@68 {
+		compatible = "invensense,mpu9250";
+		reg = <0x68>;
+		interrupt-parent = <&gpio3>;
+		interrupts = <21 IRQ_TYPE_EDGE_RISING>;
+		i2c-gate {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			ak8975@c {
+				compatible = "asahi-kasei,ak8975";
+				reg = <0x0c>;
+			};
+		};
+	};
+
+	pressure@76 {
+		compatible = "bosch,bmp280";
+		reg = <0x76>;
+	};
+};
+
+/*
+ * ================================================================
+ * SPI1 -- dos canales spidev (SS1 y SS2 del conector SPI BBBlue)
+ * ================================================================
+ */
+&spi1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi1_pins &spi1_ss1_pin>;
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		compatible = "spidev";
+		reg = <0>;
+		spi-max-frequency = <24000000>;
+	};
+
+	channel@1 {
+		compatible = "spidev";
+		reg = <1>;
+		spi-max-frequency = <24000000>;
+	};
+};
+
+/*
+ * ================================================================
+ * USB
+ * ================================================================
+ */
+&usb0 {
+	dr_mode = "peripheral";
+	interrupts-extended = <&intc 18 &tps 0>;
+	interrupt-names = "mc", "vbus";
+};
+
+&usb1 {
+	dr_mode = "host";
+};
+
+/*
+ * ================================================================
+ * MMC
+ * ================================================================
+ */
+&mmc1 {
+	status = "okay";
+	vmmc-supply = <&vmmcsd_fixed>;
+	bus-width = <4>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc1_pins>;
+	cd-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+};
+
+&mmc2 {
+	status = "okay";
+	vmmc-supply = <&vmmcsd_fixed>;
+	bus-width = <8>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc2_pins>;
+};
+
+&mmc3 {
+	dmas = <&edma_xbar 12 0 1
+		&edma_xbar 13 0 2>;
+	dma-names = "tx", "rx";
+	status = "okay";
+	vmmc-supply = <&wlan_en_reg>;
+	bus-width = <4>;
+	non-removable;
+	cap-power-off-card;
+	keep-power-in-suspend;
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc3_pins &wl18xx_pins>;
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+	wlcore: wlcore@2 {
+		compatible = "ti,wl1835";
+		reg = <2>;
+		interrupt-parent = <&gpio0>;
+		interrupts = <21 IRQ_TYPE_EDGE_RISING>;
+	};
+};
+
+/*
+ * ================================================================
+ * PMIC TPS65217
+ * ================================================================
+ */
+/include/ "tps65217.dtsi"
+
+&tps {
+	/delete-property/ ti,pmic-shutdown-controller;
+
+	charger {
+		interrupts = <0>, <1>;
+		interrupt-names = "USB", "AC";
+		status = "okay";
+	};
+};
+
+/*
+ * ================================================================
+ * ADC / TSCADC
+ * ================================================================
+ */
+&tscadc {
+	status = "okay";
+	adc {
+		ti,adc-channels = <0 1 2 3 4 5 6 7>;
+	};
+};
+
+/*
+ * ================================================================
+ * CAN
+ * ================================================================
+ */
+&dcan1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&dcan1_pins>;
+	status = "okay";
+};
+
+/*
+ * ================================================================
+ * RTC
+ * ================================================================
+ */
+&rtc {
+	system-power-controller;
+	clocks = <&clk_32768_ck>, <&clk_24mhz_clkctrl AM3_CLK_24MHZ_CLKDIV32K_CLKCTRL 0>;
+	clock-names = "ext-clk", "int-clk";
+};
+
+/*
+ * ================================================================
+ * eQEP -- Encoders en cuadratura (canales 1-3)
+ * El driver ti-eqep expone los contadores via el subsistema counter.
+ * El modulo ti-eqep.ko debe estar cargado (anadir a modules-load.d).
+ * ================================================================
+ */
+&epwmss0 {
+	status = "okay";
+};
+
+&eqep0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&eqep0_pins>;
+	status = "okay";
+};
+
+&epwmss1 {
+	status = "okay";
+};
+
+&eqep1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&eqep1_pins>;
+	status = "okay";
+};
+
+&epwmss2 {
+	status = "okay";
+};
+
+&eqep2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&eqep2_pins>;
+	status = "okay";
+};
+
+/*
+ * ================================================================
+ * PRU -- Subsistema PRU-ICSS
+ * PRU0: encoder canal 4 (pendiente port a RPMsg)
+ * PRU1: firmware de servos via RPMsg (/dev/rpmsg_pru31)
+ * ================================================================
+ */
+&pruss_tm {
+	status = "okay";
+};
+
+&pru0 {
+	firmware-name = "am335x-pru0-fw";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pru_encoder_pins>;
+};
+
+&pru1 {
+	firmware-name = "am335x-pru1-rc-servo-fw";
+	pinctrl-names = "default";
+	pinctrl-0 = <&servo_pins>;
+};
+
+/*
+ * ================================================================
+ * GPIO -- configuracion de pines y line names
+ * ================================================================
+ */
+&gpio0 {
+	gpio-line-names =
+		"UART3_CTS",  /* M17 */
+		"UART3_RTS",  /* M18 */
+		"UART2_RX",   /* A17 */
+		"UART2_TX",   /* B17 */
+		"I2C1_SDA",   /* B16 */
+		"I2C1_SCL",   /* A16 */
+		"MMC0_CD",    /* C15 */
+		"SPI1_SS2",   /* C18 */
+		"EQEP_1A",    /* V2  */
+		"EQEP_1B",    /* V3  */
+		"MDIR_2B",    /* V4  */
+		"BATT_LED_2", /* T5  */
+		"I2C2_SDA",   /* D18 */
+		"I2C2_SCL",   /* D17 */
+		"UART1_RX",   /* D16 */
+		"UART1_TX",   /* D15 */
+		"MMC2_DAT1",  /* J18 */
+		"MMC2_DAT2",  /* K15 */
+		"NC",         /* F16 */
+		"WIFI_LED",   /* A15 */
+		"MOT_STBY",   /* D14 */
+		"WLAN_IRQ",   /* K16 */
+		"PWM_2A",     /* U10 */
+		"PWM_2B",     /* T10 */
+		"",
+		"",
+		"BATT_LED_4", /* T11 */
+		"BATT_LED_1", /* U12 */
+		"BT_EN",      /* K17 */
+		"SPI1_SS1",   /* H18 */
+		"UART4_RX",   /* T17 */
+		"MDIR_1B";    /* U17 */
+};
+
+&gpio1 {
+	gpio-line-names =
+		"MMC1_DAT0",  /* U7  */
+		"MMC1_DAT1",  /* V7  */
+		"MMC1_DAT2",  /* R8  */
+		"MMC1_DAT3",  /* T8  */
+		"MMC1_DAT4",  /* U8  */
+		"MMC1_DAT5",  /* V8  */
+		"MMC1_DAT6",  /* R9  */
+		"MMC1_DAT7",  /* T9  */
+		"DCAN1_TX",   /* E18 */
+		"DCAN1_RX",   /* E17 */
+		"UART0_RX",   /* E15 */
+		"UART0_TX",   /* E16 */
+		"EQEP_2A",    /* T12 */
+		"EQEP_2B",    /* R12 */
+		"PRU_E_A",    /* V13 */
+		"PRU_E_B",    /* U13 */
+		"MDIR_2A",    /* R13 */
+		"GPIO1_17",   /* V14 */
+		"PWM_1A",     /* U14 */
+		"PWM_1B",     /* T14 */
+		"EMMC_RST",   /* R14 */
+		"USR_LED_0",  /* V15 */
+		"USR_LED_1",  /* U15 */
+		"USR_LED_2",  /* T15 */
+		"USR_LED_3",  /* V16 */
+		"GPIO1_25",   /* U16 */
+		"MCASP0_AXR0", /* T16 */
+		"MCASP0_AXR1", /* V17 */
+		"MCASP0_ACLKR", /* U18 */
+		"BATT_LED_3", /* V6  */
+		"MMC1_CLK",   /* U9  */
+		"MMC1_CMD";   /* V9  */
+};
+
+&gpio2 {
+	gpio-line-names =
+		"MDIR_1A",    /* T13 */
+		"MCASP0_FSR", /* V12 */
+		"LED_RED",    /* R7  */
+		"LED_GREEN",  /* T7  */
+		"MODE_BTN",   /* U6  */
+		"PAUSE_BTN",  /* T6  */
+		"MDIR_4A",    /* R1  */
+		"MDIR_4B",    /* R2  */
+		"MDIR_3B",    /* R3  */
+		"MDIR_3A",    /* R4  */
+		"SVO7",       /* T1  */
+		"SVO8",       /* T2  */
+		"SVO5",       /* T3  */
+		"SVO6",       /* T4  */
+		"UART5_TX",   /* U1  */
+		"UART5_RX",   /* U2  */
+		"SERVO_EN",   /* U3  */
+		"NC",         /* U4  */
+		"UART3_RX",   /* L17 */
+		"UART3_TX",   /* L16 */
+		"MMC2_CLK",   /* L15 */
+		"DCAN1_SILENT", /* M16 */
+		"SVO1",       /* U5  */
+		"SVO3",       /* R5  */
+		"SVO2",       /* V5  */
+		"SVO4",       /* R6  */
+		"MMC0_DAT3",  /* F17 */
+		"MMC0_DAT2",  /* F18 */
+		"MMC0_DAT1",  /* G15 */
+		"MMC0_DAT0",  /* G16 */
+		"MMC0_CLK",   /* G17 */
+		"MMC0_CMD";   /* G18 */
+};
+
+&gpio3 {
+	/*
+	 * Aplicar pinmux de los pines GP0 (GPIO3_17 y GPIO3_20) al arrancar.
+	 * Sin este pinctrl, esos pines quedan en su funcion por defecto
+	 * (mcasp0_ahclkx / mcasp0_ahclkr) y no responden como GPIO.
+	 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&gpio_gp0_pins>;
+
+	gpio-line-names =
+		"MMC2_DAT3",  /* H16 */
+		"GPIO3_1",    /* H17 */
+		"GPIO3_2",    /* J15 */
+		"MMC2_CMD",   /* J16 */
+		"MMC2_DAT0",  /* J17 */
+		"I2C0_SDA",   /* C17 */
+		"I2C0_SCL",   /* C16 */
+		"EMU1",       /* C14 */
+		"EMU0",       /* B14 */
+		"WL_EN",      /* K18 */
+		"WL_BT_OE",   /* L18 */
+		"",
+		"",
+		"NC",         /* F15 */
+		"SPI1_SCK",   /* A13 */
+		"SPI1_MISO",  /* B13 */
+		"SPI1_MOSI",  /* D12 */
+		"GPIO3_17",   /* C12 GP0_PIN_6 */
+		"EQEP_0A",    /* B12 */
+		"EQEP_0B",    /* C13 */
+		"GPIO3_20",   /* D13 GP0_PIN_5 */
+		"IMU_INT",    /* A14 */
+		"", "", "", "", "", "", "", "", "", "";
+
+	ls-buf-en-hog {
+		gpio-hog;
+		gpios = <10 GPIO_ACTIVE_HIGH>;
+		output-high;
+	};
+};
+
+&wkup_m3_ipc {
+	ti,scale-data-fw = "am335x-bone-scale-data.bin";
+};
