@@ -14,6 +14,7 @@ volatile register uint32_t __R31;
 #define TO_ARM_HOST     18
 #define FROM_ARM_HOST   19
 #define CHAN_NAME       "rpmsg-pru"
+#define CHAN_DESC       "Channel 31"
 #define CHAN_PORT       31
 #define VIRTIO_CONFIG_S_DRIVER_OK 4
 #define PERIOD_CYCLES   4000000U
@@ -45,7 +46,7 @@ void main(void) {
                    &resourceTable.rpmsg_vring1,
                    TO_ARM_HOST, FROM_ARM_HOST);
     while (pru_rpmsg_channel(RPMSG_NS_CREATE, &transport,
-                             CHAN_NAME, CHAN_PORT) != PRU_RPMSG_SUCCESS);
+                         CHAN_NAME, CHAN_DESC, CHAN_PORT) != PRU_RPMSG_SUCCESS);
 
     uint32_t loop_count = 0;
     uint32_t loops_per_period = 93712; /* ~20ms a ~3MHz efectivos del loop */

@@ -3,30 +3,37 @@
 #
 # much thanks to Zubeen Tolani and Mark Yoder for porting this pru code
 # to remoteproc.
+#
+# --- kernel 5.10 port note ---
+# PRU0's encoder firmware was originally split into main_pru0.c (C,
+# RPMsg setup) + pru0-encoder.asm (hand-written PRU assembly, the
+# actual quadrature decode loop). For the 5.10 port this was rewritten
+# entirely in C (see main_pru0.c), verified step-by-step against the
+# original assembly's state machine before being adopted, so this
+# Makefile no longer builds or links pru0-encoder.asm. The .asm file
+# is kept in the repo for reference/attribution only.
 
 
-BIN_DIR		:= fw
-SRC_DIR		:= src
-BUILD_DIR	:= build
+BIN_DIR         := fw
+SRC_DIR         := src
+BUILD_DIR       := build
 
-PRU0_FW		:= am335x-pru0-rc-encoder-fw
-PRU1_FW		:= am335x-pru1-rc-servo-fw
+PRU0_FW         := am335x-pru0-rc-encoder-fw
+PRU1_FW         := am335x-pru1-rc-servo-fw
 
-TARGET0		:= $(BIN_DIR)/$(PRU0_FW)
-TARGET1		:= $(BIN_DIR)/$(PRU1_FW)
-TARGETS		:= $(TARGET0) $(TARGET1)
-LINK_PRU1_FW	:=
-LINK_PRU0_FW	:= $(BUILD_DIR)/pru0-encoder.object
+TARGET0         := $(BIN_DIR)/$(PRU0_FW)
+TARGET1         := $(BIN_DIR)/$(PRU1_FW)
+TARGETS         := $(TARGET0) $(TARGET1)
 
-RM		:= rm -f -r
-INSTALL		:= install -m 755
-INSTALLDIR	:= install -d -m 755
-INSTALLNONEXEC	:= install -m 644
+RM              := rm -f -r
+INSTALL         := install -m 755
+INSTALLDIR      := install -d -m 755
+INSTALLNONEXEC  := install -m 644
 
 
-PRU_CGT		:= /usr/share/ti/cgt-pru
-LNKPRU		:= /usr/bin/lnkpru
-CLPRU		:= /usr/bin/clpru
+PRU_CGT         := /usr/share/ti/cgt-pru
+LNKPRU          := /usr/bin/lnkpru
+CLPRU           := /usr/bin/clpru
 
 # if the pru-software-support-package is installed to /opt/ use that
 # otherwise look in /usr/lib/ti/ which is where the BBB images puts it
@@ -36,9 +43,9 @@ INCLUDE=--include_path=/opt/source/pru-software-support-package/include \
 --include_path=/opt/source/pru-software-support-package/include/am335x \
 --include_path=$(PRU_CGT)/include
 else
-LIBS=--library=/usr/lib/ti/pru-software-support-package/lib/rpmsg_lib.lib
-INCLUDE=--include_path=/usr/lib/ti/pru-software-support-package/include \
---include_path=/usr/lib/ti/pru-software-support-package/include/am335x \
+LIBS=--library=/usr/lib/ti/pru-software-support-package-v6.0/lib/rpmsg_lib.lib
+INCLUDE=--include_path=/usr/lib/ti/pru-software-support-package-v6.0/include \
+--include_path=/usr/lib/ti/pru-software-support-package-v6.0/include/am335x \
 --include_path=$(PRU_CGT)/include
 endif
 
@@ -57,38 +64,25 @@ all: $(TARGETS)
 	@echo "Generated: $^"
 
 
-$(TARGET0): $(BUILD_DIR)/main_pru0.object $(LINK_PRU0_FW)
-	@echo 'LD	$^'
+$(TARGET0): $(BUILD_DIR)/main_pru0.object
+	@echo 'LD       $^'
 	@mkdir -p $(BIN_DIR)
-	@$(LNKPRU) -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $@ $^  $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS) $^
+	@$(LNKPRU) -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $@ $^  $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS)
 
 $(TARGET1): $(BUILD_DIR)/main_pru1.object
-	@echo 'LD	$^'
+	@echo 'LD       $^'
 	@mkdir -p $(BIN_DIR)
 	@$(LNKPRU) -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $@ $^  $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS)
 
 $(BUILD_DIR)/main_pru0.object: $(SRC_DIR)/main_pru0.c
 	@mkdir -p $(BUILD_DIR)
-	@echo 'CC	$<'
+	@echo 'CC       $<'
 	@$(CLPRU)  $(INCLUDE) $(CFLAGS) -fe $@ $<
-
 
 $(BUILD_DIR)/main_pru1.object: $(SRC_DIR)/main_pru1.c
 	@mkdir -p $(BUILD_DIR)
-	@echo 'CC	$<'
+	@echo 'CC       $<'
 	@$(CLPRU)  $(INCLUDE) $(CFLAGS) -fe $@ $<
-
-
-$(BUILD_DIR)/pru1-servo.object: $(SRC_DIR)/pru1-servo.asm
-	@mkdir -p $(BUILD_DIR)
-	@echo 'CC	$<'
-	@$(CLPRU)  $(INCLUDE) $(CFLAGS) -fe $@ $<
-
-$(BUILD_DIR)/pru0-encoder.object: $(SRC_DIR)/pru0-encoder.asm
-	@mkdir -p $(BUILD_DIR)
-	@echo 'CC	$<'
-	@$(CLPRU) $(INCLUDE) $(CFLAGS) -fe $@ $<
-
 
 
 install: all

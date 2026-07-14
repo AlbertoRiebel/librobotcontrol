@@ -1,0 +1,31 @@
+# /lib/systemd/system/pru_encoder.service
+#
+# Analogous to pru_servo.service, but for PRU0 (encoder channel 4)
+# instead of PRU1 (servos). Same reasoning applies: the PRU firmware
+# tends to auto-start with a stale/no firmware before the rpmsg_pru
+# kernel module is fully ready, so this service stops it and starts
+# it again cleanly once modules-load.service has finished.
+#
+# NOTE: remoteproc1 / pruss-core0 is the expected PRU0 device based
+# on the standard AM335x remoteproc numbering (remoteproc0=wkup_m3,
+# remoteproc1=pru0, remoteproc2=pru1 - the last of which is confirmed
+# correct by the working pru_servo.service on this exact system). If
+# `cat /sys/class/remoteproc/remoteproc1/name` does not show a pru0
+# device on this system, adjust remoteproc1 -> the correct number
+# throughout this file before installing it.
+[Unit]
+Description=PRU0 Encoder RPMsg firmware loader
+After=systemd-modules-load.service sys-class-remoteproc-remoteproc1.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/mkdir -p /dev/remoteproc
+ExecStartPre=/bin/sh -c "ln -sfT /sys/class/remoteproc/remoteproc1 /dev/remoteproc/pruss-core0 2>/dev/null || true"
+ExecStartPre=/bin/sh -c "echo stop > /dev/remoteproc/pruss-core0/state 2>/dev/null || true"
+ExecStartPre=/bin/sleep 2
+ExecStart=/bin/sh -c "echo start > /dev/remoteproc/pruss-core0/state"
+ExecStop=/bin/sh -c "echo stop > /dev/remoteproc/pruss-core0/state"
+
+[Install]
+WantedBy=multi-user.target

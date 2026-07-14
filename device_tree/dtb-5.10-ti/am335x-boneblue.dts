@@ -265,10 +265,18 @@
 		>;
 	};
 
-	/* E4 - encoder PRU (canal 4, entrada PRU0) */
+	/* E4 - encoder PRU (canal 4, entrada PRU0)
+	 * Canal A = R31 bit 14 = P8_16 (GPMC_AD14, ball V13)
+	 * Canal B = R31 bit 15 = P8_15 (GPMC_AD15, ball U13)
+	 * Confirmado contra am335x-bone-common-univ.dtsi: el comentario
+	 * "PRU0_r31_16" que traia la lista original de kernel 4.14 para
+	 * este mismo pin (P8_16) era incorrecto - P8_16 es bit 14, no 16.
+	 * Ver pru0-encoder.asm (.asg 14,A / .asg 15,B) para el origen del
+	 * dato real. */
 	pru_encoder_pins: pinmux_pru_encoder_pins {
 		pinctrl-single,pins = <
-			AM33XX_PADCONF(AM335X_PIN_GPMC_CLK, PIN_INPUT, MUX_MODE6) /* (V12) P8_16 PRU0_r31_16 */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD14, PIN_INPUT, MUX_MODE6) /* (V13) P8_16 PRU0_r31_14 - Canal A */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_AD15, PIN_INPUT, MUX_MODE6) /* (U13) P8_15 PRU0_r31_15 - Canal B */
 		>;
 	};
 
@@ -614,7 +622,10 @@
 };
 
 &pru0 {
-	firmware-name = "am335x-pru0-fw";
+	/* Debe coincidir EXACTAMENTE con PRU0_FW del Makefile del firmware
+	 * (pru_firmware/Makefile). Si estos dos nombres difieren,
+	 * remoteproc busca un archivo que no existe y PRU0 nunca arranca. */
+	firmware-name = "am335x-pru0-rc-encoder-fw";
 	pinctrl-names = "default";
 	pinctrl-0 = <&pru_encoder_pins>;
 };
