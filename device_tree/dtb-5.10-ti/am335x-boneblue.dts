@@ -280,6 +280,24 @@
 		>;
 	};
 
+	/* PWM - offsets crudos tomados directo del DTS original de kernel
+	 * 4.14 (device_tree/dtb-4.14-ti/am335x-boneblue.dts), sin pasar
+	 * por simbolos AM335X_PIN_* para no arriesgar otro error de
+	 * mapeo como el de eqep0/AXR0-ACLKR. */
+	ehrpwm1_pins: pinmux_ehrpwm1_pins {
+		pinctrl-single,pins = <
+			0x020  0x24 /* P8_19_pwm_pin */
+			0x024  0x24 /* P8_13_pwm_pin */
+		>;
+	};
+
+	ehrpwm2_pins: pinmux_ehrpwm2_pins {
+		pinctrl-single,pins = <
+			0x048  0x26 /* P9_14_pwm_pin */
+			0x04c  0x26 /* P9_16_pwm_pin */
+		>;
+	};
+
 	/* Servo outputs PRU1 (8 canales) + SERVO_EN */
 	servo_pins: pinmux_servo_pins {
 		pinctrl-single,pins = <
@@ -590,6 +608,10 @@
 	status = "okay";
 };
 
+&ehrpwm0 {
+	status = "okay";
+};
+
 &eqep0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&eqep0_pins>;
@@ -597,6 +619,12 @@
 };
 
 &epwmss1 {
+	status = "okay";
+};
+
+&ehrpwm1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ehrpwm1_pins>;
 	status = "okay";
 };
 
@@ -610,11 +638,21 @@
 	status = "okay";
 };
 
+&ehrpwm2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ehrpwm2_pins>;
+	status = "okay";
+};
+
 &eqep2 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&eqep2_pins>;
 	status = "okay";
 };
+
+&ecap0 { status = "okay"; };
+&ecap1 { status = "okay"; };
+&ecap2 { status = "okay"; };
 
 /* PRU */
 &pruss_tm {
