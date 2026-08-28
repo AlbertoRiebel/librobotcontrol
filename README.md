@@ -256,7 +256,7 @@ services/
 │   └── 00_pru_rpmsg_modules.conf 		# new
 ├── pru_servo/
 │   ├── Makefile 						# new
-│   └── pru_encoder.service 			# new
+│   └── pru_servo.service 				# new
 └── pru_encoder/
     ├── Makefile 						# new
     └── pru_encoder.service 			# new
