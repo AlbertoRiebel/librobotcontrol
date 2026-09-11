@@ -88,7 +88,7 @@
     /* SPI7 bus mapping (includes GPIO chip select) */
     cape_spi7_pins: cape-spi7-pins {
         pinctrl-single,pins = <
-            J721E_IOPAD(0x230, PIN_OUTPUT, 6) /* P9_28: SPI7_CS0 (Hardware) */
+            J721E_IOPAD(0x230, PIN_OUTPUT, 6) /* P9_28: SPI7_CS0 */
             J721E_IOPAD(0x23C, PIN_INPUT,  6) /* P9_29: SPI7_D1 (MISO) */
             J721E_IOPAD(0x238, PIN_OUTPUT, 6) /* P9_30: SPI7_D0 (MOSI) */
             J721E_IOPAD(0x234, PIN_OUTPUT, 6) /* P9_31: SPI7_CLK */
@@ -137,8 +137,8 @@
     /* UART5 bus mapping */
     cape_uart5_pins: cape-uart5-pins {
         pinctrl-single,pins = <
-            J721E_IOPAD(0x1AC, PIN_OUTPUT, 3) /* P9_37: UART5_TXD */
-            J721E_IOPAD(0x1A8, PIN_INPUT,  3) /* P9_38: UART5_RXD */
+            J721E_IOPAD(0x1AC, PIN_OUTPUT, 3) /* P8_37: UART5_TXD */
+            J721E_IOPAD(0x1A8, PIN_INPUT,  3) /* P8_38: UART5_RXD */
         >;
     };
 
@@ -209,17 +209,17 @@
     /* Other GPIO pins mapping */
     cape_gpio_pins: cape-gpio-pins {
         pinctrl-single,pins = <
-            J721E_IOPAD(0x01C, PIN_OUTPUT, 7) /* P8_34: GPIO0_7 */
-            J721E_IOPAD(0x020, PIN_OUTPUT, 7) /* P8_36: GPIO0_8 */
-            J721E_IOPAD(0x108, PIN_OUTPUT, 7) /* P8_43: GPIO0_65 */
-            J721E_IOPAD(0x10C, PIN_OUTPUT, 7) /* P8_44: GPIO0_66 */
-            J721E_IOPAD(0x140, PIN_OUTPUT, 7) /* P8_45: GPIO0_79 */
-            J721E_IOPAD(0x144, PIN_OUTPUT, 7) /* P8_46: GPIO0_80 */
-            J721E_IOPAD(0x0B8, PIN_OUTPUT, 7) /* P9_12: GPIO0_45 */
-            J721E_IOPAD(0x008, PIN_OUTPUT, 7) /* P9_13: GPIO0_2 */
-            J721E_IOPAD(0x0C0, PIN_OUTPUT, 7) /* P9_15: GPIO0_47 */
-            J721E_IOPAD(0x200, PIN_OUTPUT, 7) /* P9_25: GPIO0_127 */
-            J721E_IOPAD(0x204, PIN_OUTPUT, 7) /* P9_41: GPIO1_0 */
+            J721E_IOPAD(0x01C, PIN_OUTPUT, 7) /* P8_34: GPIO0_7 (MDIR_2B) */
+            J721E_IOPAD(0x020, PIN_OUTPUT, 7) /* P8_36: GPIO0_8 (SERVO_EN) */
+            J721E_IOPAD(0x108, PIN_OUTPUT, 7) /* P8_43: GPIO0_65 (MDIR_3B) */
+            J721E_IOPAD(0x10C, PIN_OUTPUT, 7) /* P8_44: GPIO0_66 (MDIR_3A) */
+            J721E_IOPAD(0x140, PIN_OUTPUT, 7) /* P8_45: GPIO0_79 (MDIR_4A) */
+            J721E_IOPAD(0x144, PIN_OUTPUT, 7) /* P8_46: GPIO0_80 (MDIR_4B) */
+            J721E_IOPAD(0x0B8, PIN_OUTPUT, 7) /* P9_12: GPIO0_45 (MDIR_1A) */
+            J721E_IOPAD(0x008, PIN_OUTPUT, 7) /* P9_13: GPIO0_2 (MDIR_1B) */
+            J721E_IOPAD(0x0C0, PIN_OUTPUT, 7) /* P9_15: GPIO0_47 (MDIR_2A) */
+            J721E_IOPAD(0x200, PIN_INPUT, 7) /* P9_25: GPIO0_127 (IMU_INT) */
+            J721E_IOPAD(0x204, PIN_OUTPUT, 7) /* P9_41: GPIO1_0 (MOT_STBY) */
         >;
     };
 };
