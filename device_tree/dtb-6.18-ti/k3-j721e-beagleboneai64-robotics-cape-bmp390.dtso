@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * k3-j721e-beagleboneai64-robotics-cape-bmp390.dtso
+ *
+ * Barometer overlay for the updated Robotics Cape (BMP390).
+ * Must be loaded alongside the main robotics cape overlay.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&main_i2c2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	bmp390: bmp390@76 {
+		compatible = "bosch,bmp380";
+		reg = <0x76>;
+	};
+};

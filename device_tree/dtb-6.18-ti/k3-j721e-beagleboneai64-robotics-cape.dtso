@@ -1,0 +1,403 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * k3-j721e-beagleboneai64-robotics-cape.dtso
+ *
+ * Robotics Cape base pinmux and device configuration for BeagleBone AI-64.
+ * Supports both original (MPU9250/BMP280) and updated (ICM20948/BMP390) capes.
+ *
+ * Changes from the original design:
+ * 	- Encoder 3, UART2 (GPS) and UART4 (DSM2) are handled via PRU due to no physical connection with dedicated hardware in J721e SoC.
+ * 	- SPI1.2 CS pin is handled via GPIO (Soft CS) due to no physical connection with dedicated hardware in J721e SoC.
+ * 	- UART1 connector lines are connected to UART2 pins in J721e SoC.
+ * 	- SPI1 connector lines are connected to SPI7 pins in J721e SoC.
+ * 	- I2C connector, originally connected to I2C1 line, is connected to I2C6 line pins of the J721e SoC because it is the line connected to the pinmux of those pins.
+ *
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include "ti/k3-pinctrl.h"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/soc/ti,sci_pm_domain.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+&{/chosen} {
+	overlays {
+		k3-j721e-beagleboneai64-robotics-cape.kernel = __TIMESTAMP__;
+	};
+};
+
+/* ==================== PINMUX CONFIGURATION ==================== */
+
+&main_pmx0 {
+	/* PRU: Software Encoders (PRG0_PRU0) */
+	icssg0_encoders_pins_default: icssg0-encoders-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x0f0, PIN_INPUT, 1) /* P8_12: QEP_2A */
+			J721E_IOPAD(0x0f4, PIN_INPUT, 1) /* P8_11: QEP_2B */
+			J721E_IOPAD(0x0f8, PIN_INPUT, 1) /* P8_15: QEP_4B */
+			J721E_IOPAD(0x0fc, PIN_INPUT, 1) /* P8_16: QEP_4A */
+		>;
+	};
+
+	/* PRU: Servos (PRG0_PRU1) */
+	icssg0_servos_pins_default: icssg0-servos-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x120, PIN_OUTPUT, 0) /* P8_27: SVO1 */
+			J721E_IOPAD(0x124, PIN_OUTPUT, 0) /* P8_28: SVO2 */
+			J721E_IOPAD(0x128, PIN_OUTPUT, 0) /* P8_29: SVO3 */
+			J721E_IOPAD(0x12c, PIN_OUTPUT, 0) /* P8_30: SVO4 */
+			J721E_IOPAD(0x118, PIN_OUTPUT, 0) /* P8_39: SVO5 */
+			J721E_IOPAD(0x11c, PIN_OUTPUT, 0) /* P8_40: SVO6 */
+			J721E_IOPAD(0x110, PIN_OUTPUT, 0) /* P8_41: SVO7 */
+			J721E_IOPAD(0x114, PIN_OUTPUT, 0) /* P8_42: SVO8 */
+		>;
+	};
+
+	/* PRU: DSM Receiver (PRG1_PRU0) */
+	icssg1_dsm_pins_default: icssg1-dsm-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x004, PIN_INPUT, 1) /* P9_11: UART4_RX / DSM */
+		>;
+	};
+
+	/* PRU: GPS UART (PRG1_PRU1) */
+	icssg1_gps_pins_default: icssg1-gps-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x0a0, PIN_OUTPUT, 0) /* P9_21: UART2_TX / GPS_TX */
+			J721E_IOPAD(0x09c, PIN_INPUT, 1)  /* P9_22: UART2_RX / GPS_RX */
+		>;
+	};
+
+	/* Hardware Encoders (eQEP) */
+	eqep0_pins_default: eqep0-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x1f0, PIN_INPUT, 5) /* P9_42: QEP_0A */
+			J721E_IOPAD(0x1f4, PIN_INPUT, 5) /* P9_27: QEP_0B */
+		>;
+	};
+
+	eqep1_pins_default: eqep1-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x064, PIN_INPUT, 9) /* P8_35: QEP_1A */
+			J721E_IOPAD(0x068, PIN_INPUT, 9) /* P8_33: QEP_1B */
+		>;
+	};
+
+	/* I2C Buses */
+	i2c2_pins_default: i2c2-pins-default { /* IMU/Barometer */
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x208, PIN_INPUT_PULLUP, 4) /* P9_19: I2C2_SCL */
+			J721E_IOPAD(0x20c, PIN_INPUT_PULLUP, 4) /* P9_20: I2C2_SDA */
+		>;
+	};
+
+	i2c6_pins_default: i2c6-pins-default { /* Expansion */
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x1d0, PIN_INPUT_PULLUP, 2) /* P9_17: I2C6_SCL */
+			J721E_IOPAD(0x1e4, PIN_INPUT_PULLUP, 2) /* P9_18: I2C6_SDA */
+		>;
+	};
+
+	/* SPI7 Bus */
+	spi7_pins_default: spi7-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x230, PIN_OUTPUT, 6)  /* P9_28: SPI7_CS0 */
+			J721E_IOPAD(0x0b0, PIN_DISABLE, 7)
+			J721E_IOPAD(0x23c, PIN_INPUT, 6)   /* P9_29: SPI7_D1 (MISO) */
+			J721E_IOPAD(0x0d8, PIN_DISABLE, 7)
+			J721E_IOPAD(0x238, PIN_OUTPUT, 6)  /* P9_30: SPI7_D0 (MOSI) */
+			J721E_IOPAD(0x0b4, PIN_DISABLE, 7)
+			J721E_IOPAD(0x234, PIN_OUTPUT, 6)  /* P9_31: SPI7_CLK */
+			J721E_IOPAD(0x0d4, PIN_DISABLE, 7)
+		>;
+	};
+
+	/* Motor PWMs */
+	ehrpwm0_pins_default: ehrpwm0-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x164, PIN_OUTPUT, 6) /* P8_19: PWM_2A */
+			J721E_IOPAD(0x168, PIN_OUTPUT, 6) /* P8_13: PWM_2B */
+		>;
+	};
+
+	ehrpwm2_pins_default: ehrpwm2-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x178, PIN_OUTPUT, 6) /* P9_14: PWM_1A */
+			J721E_IOPAD(0x17c, PIN_OUTPUT, 6) /* P9_16: PWM_1B */
+		>;
+	};
+
+	/* Expansion UARTs */
+	uart5_pins_default: uart5-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x1ac, PIN_OUTPUT, 3) /* P8_37: UART5_TX */
+			J721E_IOPAD(0x1a8, PIN_INPUT, 3)  /* P8_38: UART5_RX */
+		>;
+	};
+
+	uart2_pins_default: uart2-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x1e0, PIN_OUTPUT, 3) /* P9_24: UART2_TXD */
+			J721E_IOPAD(0x1dc, PIN_INPUT, 3)  /* P9_26: UART2_RXD */
+		>;
+	};
+
+	/* LEDs & Buttons */
+	leds_pins_default: leds-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x03c, PIN_OUTPUT, 7) /* P8_7:  LED_RED */
+			J721E_IOPAD(0x038, PIN_OUTPUT, 7) /* P8_8:  LED_GRN */
+			J721E_IOPAD(0x00c, PIN_OUTPUT, 7) /* P8_17: LED_1   */
+			J721E_IOPAD(0x010, PIN_OUTPUT, 7) /* P8_18: LED_2   */
+			J721E_IOPAD(0x0d0, PIN_OUTPUT, 7) /* P8_26: LED_3   */
+			J721E_IOPAD(0x130, PIN_OUTPUT, 7) /* P8_14: LED_4   */
+		>;
+	};
+
+	buttons_pins_default: buttons-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x044, PIN_INPUT_PULLUP, 7) /* P8_9:  PAUSE_BTN */
+			J721E_IOPAD(0x040, PIN_INPUT_PULLUP, 7) /* P8_10: MODE_BTN  */
+		>;
+	};
+
+	/* Motor Direction */
+	motor_direction_pins_default: motor-direction-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x0b8, PIN_OUTPUT, 7) /* P9_12: MDIR_1A */
+			J721E_IOPAD(0x008, PIN_OUTPUT, 7) /* P9_13: MDIR_1B */
+			J721E_IOPAD(0x0c0, PIN_OUTPUT, 7) /* P9_15: MDIR_2A */
+			J721E_IOPAD(0x01c, PIN_OUTPUT, 7) /* P8_34: MDIR_2B */
+			J721E_IOPAD(0x108, PIN_OUTPUT, 7) /* P8_43: MDIR_3B */
+			J721E_IOPAD(0x10c, PIN_OUTPUT, 7) /* P8_44: MDIR_3A */
+			J721E_IOPAD(0x140, PIN_OUTPUT, 7) /* P8_45: MDIR_4A */
+			J721E_IOPAD(0x144, PIN_OUTPUT, 7) /* P8_46: MDIR_4B */
+		>;
+	};
+
+	/* Misc GPIOs */
+	misc_gpio_pins_default: misc-gpio-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x020, PIN_OUTPUT, 7) /* P8_36: SERVO_EN */
+			J721E_IOPAD(0x200, PIN_INPUT,  7) /* P9_25: IMU_INT  */
+			J721E_IOPAD(0x204, PIN_OUTPUT, 7) /* P9_41: MOT_STBY */
+			J721E_IOPAD(0x028, PIN_OUTPUT, 7) /* P9_23: SPI7_CS1 (Soft CS) */
+		>;
+	};
+};
+
+&wkup_pmx0 {
+	/* ADC Inputs */
+	mcu_adc0_pins_default: mcu-adc0-pins-default {
+		pinctrl-single,pins = <
+			J721E_WKUP_IOPAD(0x130, PIN_INPUT, 0) /* P9_39: AIN0 */
+			J721E_WKUP_IOPAD(0x134, PIN_INPUT, 0) /* P9_40: AIN1 */
+			J721E_WKUP_IOPAD(0x138, PIN_INPUT, 0) /* P9_37: AIN2 */
+			J721E_WKUP_IOPAD(0x13c, PIN_INPUT, 0) /* P9_38: AIN3 */
+			J721E_WKUP_IOPAD(0x144, PIN_INPUT, 0) /* P9_36: V_DIV_DC  */
+			J721E_WKUP_IOPAD(0x148, PIN_INPUT, 0) /* P9_35: V_DIV_BAT */
+		>;
+	};
+};
+
+/* ==================== VIRTUAL DEVICES ==================== */
+
+&{/} {
+	robotics_cape_leds: robotics-cape-leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&leds_pins_default>;
+
+		led-red {
+			gpios = <&main_gpio0 15 GPIO_ACTIVE_HIGH>;
+			label = "cape:red";
+		};
+		led-green {
+			gpios = <&main_gpio0 14 GPIO_ACTIVE_HIGH>;
+			label = "cape:green";
+		};
+		led-1 {
+			gpios = <&main_gpio0 3 GPIO_ACTIVE_HIGH>;
+			label = "cape:led1";
+		};
+		led-2 {
+			gpios = <&main_gpio0 4 GPIO_ACTIVE_HIGH>;
+			label = "cape:led2";
+		};
+		led-3 {
+			gpios = <&main_gpio0 51 GPIO_ACTIVE_HIGH>;
+			label = "cape:led3";
+		};
+		led-4 {
+			gpios = <&main_gpio0 75 GPIO_ACTIVE_HIGH>;
+			label = "cape:led4";
+		};
+	};
+
+	robotics_cape_keys: robotics-cape-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&buttons_pins_default>;
+
+		pause-btn {
+			gpios = <&main_gpio0 17 GPIO_ACTIVE_LOW>;
+			label = "pause";
+			linux,code = <KEY_PAUSE>;
+		};
+		mode-btn {
+			gpios = <&main_gpio0 16 GPIO_ACTIVE_LOW>;
+			label = "mode";
+			linux,code = <KEY_MODE>;
+		};
+	};
+};
+
+/* ==================== HARDWARE CONTROLLERS ==================== */
+
+&main_i2c2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pins_default>;
+	clock-frequency = <400000>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+};
+
+&main_i2c6 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins_default>;
+	clock-frequency = <400000>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+};
+
+&main_uart2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart2_pins_default>;
+};
+
+&main_uart5 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart5_pins_default>;
+};
+
+&main_ehrpwm0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&ehrpwm0_pins_default>;
+};
+
+&main_ehrpwm2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&ehrpwm2_pins_default>;
+};
+
+/* ==================== ICSSG / PRU ==================== */
+
+&pru0_0 {
+	status = "okay";
+	firmware-name = "robotics-cape-encoders.fw";
+	pinctrl-names = "default";
+	pinctrl-0 = <&icssg0_encoders_pins_default>;
+};
+
+&pru0_1 {
+	status = "okay";
+	firmware-name = "robotics-cape-servos.fw";
+	pinctrl-names = "default";
+	pinctrl-0 = <&icssg0_servos_pins_default>;
+};
+
+&pru1_0 {
+	status = "okay";
+	firmware-name = "robotics-cape-dsm.fw";
+	pinctrl-names = "default";
+	pinctrl-0 = <&icssg1_dsm_pins_default>;
+};
+
+&pru1_1 {
+	status = "okay";
+	firmware-name = "robotics-cape-gps.fw";
+	pinctrl-names = "default";
+	pinctrl-0 = <&icssg1_gps_pins_default>;
+};
+
+/* ==================== eQEP ==================== */
+
+&cbass_main {
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	eqep0: counter@3200000 {
+		compatible = "ti,am3352-eqep";
+		reg = <0x00 0x03200000 0x00 0x100>;
+		interrupt-parent = <&gic500>;
+		interrupts = <GIC_SPI 322 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "eqep0";
+		power-domains = <&k3_pds 94 TI_SCI_PD_EXCLUSIVE>;
+		clocks = <&k3_clks 94 0>;
+		clock-names = "eqep0-ficlk";
+		pinctrl-names = "default";
+		pinctrl-0 = <&eqep0_pins_default>;
+		status = "okay";
+		label = "encoder0";
+		
+		count_mode = <0>;
+		swap_input = <0>;
+		invert_qa = <0>;
+		invert_qb = <0>;
+	};
+
+	eqep1: counter@3210000 {
+		compatible = "ti,am3352-eqep";
+		reg = <0x00 0x03210000 0x00 0x100>;
+		interrupt-parent = <&gic500>;
+		interrupts = <GIC_SPI 323 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "eqep1";
+		power-domains = <&k3_pds 95 TI_SCI_PD_EXCLUSIVE>;
+		clocks = <&k3_clks 95 0>;
+		clock-names = "eqep1-ficlk";
+		pinctrl-names = "default";
+		pinctrl-0 = <&eqep1_pins_default>;
+		status = "okay";
+		label = "encoder1";
+
+		count_mode = <0>;
+		swap_input = <0>;
+		invert_qa = <0>;
+		invert_qb = <0>;
+	};
+};
+
+/* ==================== SPI ==================== */
+
+&main_spi7 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi7_pins_default &misc_gpio_pins_default>;
+	ti,spi-num-cs = <2>;
+	ti,pindir-d0-out-d1-in;
+	cs-gpios = <0>, <&main_gpio0 10 GPIO_ACTIVE_LOW>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	spidev_1: spidev@0 {
+		compatible = "rohm,dh2228fv"; 
+		spi-max-frequency = <24000000>;
+		reg = <0>;
+	};
+	
+	spidev_2: spidev@1 {
+		compatible = "rohm,dh2228fv";
+		spi-max-frequency = <24000000>;
+		reg = <1>;
+	};
+};

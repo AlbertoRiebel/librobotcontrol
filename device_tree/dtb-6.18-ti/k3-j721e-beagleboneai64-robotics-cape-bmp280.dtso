@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * k3-j721e-beagleboneai64-robotics-cape-bmp280.dtso
+ *
+ * Barometer overlay for the original Robotics Cape (BMP280).
+ * Must be loaded alongside the main robotics cape overlay.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&main_i2c2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	bmp280: bmp280@76 {
+		compatible = "bosch,bmp280";
+		reg = <0x76>;
+	};
+};
