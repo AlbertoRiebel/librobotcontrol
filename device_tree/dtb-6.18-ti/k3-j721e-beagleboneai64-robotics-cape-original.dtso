@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * k3-j721e-beagleboneai64-robotics-cape-original.dtso
+ *
+ * Cape-specific overlay for the ORIGINAL Robotics Cape (MPU9250 + BMP280).
+ * Must be loaded alongside the main robotics cape overlay.
+ *
+ * Everything that differs from the updated cape lives here:
+ *  - BMP280 barometer node on I2C2. The MPU9250 has no node on purpose: it is
+ *    accessed directly from userspace through /dev/i2c-2.
+ *  - P8_7 / P8_8: red and green status LEDs (LED_RED / LED_GRN).
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include "ti/k3-pinctrl.h"
+#include <dt-bindings/gpio/gpio.h>
+
+/* Shows up in /proc/device-tree/chosen/overlays/ (and beagle-version) once loaded */
+&{/chosen} {
+	overlays {
+		k3-j721e-beagleboneai64-robotics-cape-original.kernel = __TIMESTAMP__;
+	};
+};
+
+&main_pmx0 {
+	status_leds_pins_default: status-leds-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x03c, PIN_OUTPUT, 7) /* P8_7: LED_RED (GPIO0_15) */
+			J721E_IOPAD(0x038, PIN_OUTPUT, 7) /* P8_8: LED_GRN (GPIO0_14) */
+		>;
+	};
+};
+
+&{/} {
+	robotics_cape_status_leds: robotics-cape-status-leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&status_leds_pins_default>;
+
+		led-red {
+			gpios = <&main_gpio0 15 GPIO_ACTIVE_HIGH>;
+			label = "cape:red";
+		};
+		led-green {
+			gpios = <&main_gpio0 14 GPIO_ACTIVE_HIGH>;
+			label = "cape:green";
+		};
+	};
+};
+
+&main_i2c2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	bmp280: bmp280@76 {
+		compatible = "bosch,bmp280";
+		reg = <0x76>;
+	};
+};

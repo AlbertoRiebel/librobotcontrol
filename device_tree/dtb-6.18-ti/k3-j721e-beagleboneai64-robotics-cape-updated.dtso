@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * k3-j721e-beagleboneai64-robotics-cape-updated.dtso
+ *
+ * Cape-specific overlay for the UPDATED Robotics Cape (ICM20948 + BMP390).
+ * Must be loaded alongside the main robotics cape overlay.
+ *
+ * Everything that differs from the original cape lives here:
+ *  - BMP390 barometer node on I2C2. The ICM20948 has no node on purpose: it
+ *    has no mainline Linux driver, so it is accessed directly from userspace
+ *    through /dev/i2c-2, same as the MPU9250 on BeagleBone Blue.
+ *  - P8_7 / P8_8: on this cape revision these are NOT the red/green status
+ *    LEDs from the original cape - they were repurposed as INT_BMP (BMP390
+ *    data-ready/interrupt line) and FSYNC (ICM20948 frame-sync line).
+ *
+ * Pin directions below:
+ *  - P8_7 / INT_BMP = PIN_INPUT: confirmed pattern, a sensor interrupt line
+ *    is driven BY the sensor INTO the SoC.
+ *  - P8_8 / FSYNT = PIN_OUTPUT: NOT independently verified in this project.
+ *    Reasoned from the usual ICM-series convention where FSYNC is an input
+ *    TO the IMU (so an output FROM the SoC), not confirmed against the
+ *    ICM20948 datasheet directly - double-check before relying on it.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include "ti/k3-pinctrl.h"
+
+&{/chosen} {
+	overlays {
+		k3-j721e-beagleboneai64-robotics-cape-updated.kernel = __TIMESTAMP__;
+	};
+};
+
+&main_pmx0 {
+	imu_baro_sync_pins_default: imu-baro-sync-pins-default {
+		pinctrl-single,pins = <
+			J721E_IOPAD(0x03c, PIN_INPUT,  7) /* P8_7: INT_BMP (GPIO0_15) - BMP390 data-ready, SoC reads it */
+			J721E_IOPAD(0x038, PIN_OUTPUT, 7) /* P8_8: FSYNC   (GPIO0_14) - direction not independently verified, see note above */
+		>;
+	};
+};
+
+/*
+ * No device node for INT_BMP / FSYNC yet on purpose: wiring these into the
+ * bmp390 node's "interrupts" property, or into whatever drives FSYNC, is the
+ * next layer (sensor/firmware work), not pin mapping. For now the pinmux
+ * above only guarantees Linux does not leave these two pins floating in some
+ * other mode: they are not usable as interrupts/sync lines from an
+ * application until that next layer is built.
+ */
+
+&main_i2c2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	bmp390: bmp390@76 {
+		compatible = "bosch,bmp380";
+		reg = <0x76>;
+	};
+};
