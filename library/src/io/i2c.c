@@ -13,6 +13,7 @@
 #include <linux/i2c-dev.h> //for IOCTL defs
 
 #include <rc/i2c.h>
+#include <rc/model.h>
 
 // preposessor macros
 #define unlikely(x)	__builtin_expect (!!(x), 0)
@@ -61,7 +62,14 @@ int rc_i2c_init(int bus, uint8_t devAddr)
 
 	// open file descriptor
 	char str[16];
-	sprintf(str,"/dev/i2c-%d",bus);
+
+	// in the AI-64, cape's I2C connector pins are connected to I2C6 pins of the SoC
+	int actual_bus = bus;
+	if(rc_model() == MODEL_BB_AI64 && bus == 1) {
+		actual_bus = 6;
+	}
+	sprintf(str,"/dev/i2c-%d", actual_bus);
+
 	i2c[bus].fd = open(str, O_RDWR);
 	if(i2c[bus].fd==-1){
 		fprintf(stderr,"ERROR: in rc_i2c_init, failed to open /dev/i2c\n");

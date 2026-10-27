@@ -50,8 +50,15 @@ static int __open_fd(int bus, int slave)
 	char buf[32];
 	int ret;
 
+	// in the AI-64 the SPI interfaces in /dev are assigned as spidev0.0 and spidev0.1
+	// for retrocompatibility the original 1.1 and 1.2 are re-routed to 0.0 and 0.0
+	int actual_bus = bus;
 
-	snprintf(buf,sizeof(buf), SPI_BASE_PATH "%d.%d",bus, slave);
+	if(rc_model() == MODEL_BB_AI64 && bus == 1) {
+		actual_bus = 0;
+	}
+
+	snprintf(buf,sizeof(buf), SPI_BASE_PATH "%d.%d", actual_bus, slave);
 	// open file descriptor
 	ret=open(buf, O_RDWR);
 
@@ -70,7 +77,6 @@ static int __open_fd(int bus, int slave)
 	}
 	return ret;
 }
-
 
 int rc_spi_init_auto_slave(int bus, int slave, int bus_mode, int speed_hz)
 {
