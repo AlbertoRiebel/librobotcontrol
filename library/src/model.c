@@ -95,6 +95,11 @@ static void __check_model(void)
 			current_model = MODEL_BB_POCKET;
 			return;
 		}
+		// added the BeagleBone AI-64
+		if(strcmp(c, "BeagleBoard.org BeagleBone AI-64")==0){
+			current_model = MODEL_BB_AI64;
+			return;
+		}
 		return;
 	}
 
@@ -190,6 +195,7 @@ void rc_model_print(void)
 	caseprint(MODEL_BB_GREEN_W)
 	caseprint(MODEL_BB_BLUE)
 	caseprint(MODEL_BB_POCKET)
+	caseprint(MODEL_BB_AI64)
 	caseprint(MODEL_RPI_B)
 	caseprint(MODEL_RPI_B_PLUS)
 	caseprint(MODEL_RPI2_B)
