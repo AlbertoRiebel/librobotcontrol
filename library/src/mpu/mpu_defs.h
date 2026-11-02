@@ -370,6 +370,23 @@ identical but the latter has a different register map
 
 #define INV_WXYZ_QUAT       (0x100)
 
+/******************************************************************
+* ICM-20948 Specific Registers & Banks
+******************************************************************/
+#define ICM20948_WHO_AM_I        0x00 // Should return 0xEA
+#define ICM20948_REG_BANK_SEL    0x7F
+#define ICM20948_PWR_MGMT_1      0x06
+#define ICM20948_PWR_MGMT_2      0x07
+#define ICM20948_INT_PIN_CFG     0x0F
+#define ICM20948_USER_CTRL       0x03
 
+// BANK SELECT VALUES
+#define ICM20948_BANK_0          0x00
+#define ICM20948_BANK_1          0x10
+#define ICM20948_BANK_2          0x20
+#define ICM20948_BANK_3          0x30
+
+// Magnetometer AK09916
+#define WHO_AM_I_AK09916         0x01 // Returns 0x09
 
 #endif

@@ -104,6 +104,7 @@ static int imu_shutdown_flag = 0;
 static rc_filter_t low_pass, high_pass; // for magnetometer Yaw filtering
 static int was_last_steady = 0;
 static double startMagYaw = 0.0;
+static int is_icm20948 = 0;
 
 /**
 * functions for internal use only
