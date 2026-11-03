@@ -389,4 +389,9 @@ identical but the latter has a different register map
 // Magnetometer AK09916
 #define WHO_AM_I_AK09916         0x01 // Returns 0x09
 
+// ICM-20948 Bank 2 Registers
+#define ICM20948_GYRO_SMPLRT_DIV 0x00
+#define ICM20948_GYRO_CONFIG_1   0x01
+#define ICM20948_ACCEL_CONFIG    0x14
+
 #endif

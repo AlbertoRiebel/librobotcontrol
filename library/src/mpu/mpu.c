@@ -292,9 +292,17 @@ int rc_mpu_read_accel(rc_mpu_data_t *data)
 	uint8_t raw[6];
 	// set the device address
 	rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
-	// Read the six raw data registers into data array
-	if(rc_i2c_read_bytes(config.i2c_bus, ACCEL_XOUT_H, 6, &raw[0])<0){
-		return -1;
+
+	if(is_icm20948){
+		// ICM20948's accel. data is on bank 0
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
+		// ICM20948 addresses are different: 0x2D (ACCEL_XOUT_H)
+		if(rc_i2c_read_bytes(config.i2c_bus, 0x2D, 6, &raw[0])<0) return -1;
+	} else {
+		// Read the six raw data registers into data array
+		if(rc_i2c_read_bytes(config.i2c_bus, ACCEL_XOUT_H, 6, &raw[0])<0){
+			return -1;
+		}
 	}
 	// Turn the MSB and LSB into a signed 16-bit value
 	data->raw_accel[0] = (int16_t)(((uint16_t)raw[0]<<8)|raw[1]);
@@ -314,9 +322,17 @@ int rc_mpu_read_gyro(rc_mpu_data_t *data)
 	uint8_t raw[6];
 	// set the device address
 	rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
-	// Read the six raw data registers into data array
-	if(rc_i2c_read_bytes(config.i2c_bus, GYRO_XOUT_H, 6, &raw[0])<0){
-		return -1;
+
+	if(is_icm20948){
+		// ICM20948's gyro data is on bank 0
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
+		// ICM20948 address: 0x33 (GYRO_XOUT_H)
+		if(rc_i2c_read_bytes(config.i2c_bus, 0x33, 6, &raw[0])<0) return -1;
+	} else {
+		// Read the six raw data registers into data array
+		if(rc_i2c_read_bytes(config.i2c_bus, GYRO_XOUT_H, 6, &raw[0])<0){
+			return -1;
+		}
 	}
 	// Turn the MSB and LSB into a signed 16-bit value
 	data->raw_gyro[0] = (int16_t)(((int16_t)raw[0]<<8)|raw[1]);
@@ -405,18 +421,26 @@ int rc_mpu_read_mag(rc_mpu_data_t* data)
 int rc_mpu_read_temp(rc_mpu_data_t* data)
 {
 	uint16_t adc;
+	uint8_t raw[2];
 	// set device address
 	rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
-	// Read the two raw data registers
-	if(rc_i2c_read_word(config.i2c_bus, TEMP_OUT_H, &adc)<0){
-		fprintf(stderr,"failed to read IMU temperature registers\n");
-		return -1;
+
+	if(is_icm20948){
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
+		// ICM20948: 0x39 (TEMP_OUT_H)
+		if(rc_i2c_read_bytes(config.i2c_bus, 0x39, 2, raw)<0) return -1;
+		adc = (raw[0] << 8) | raw[1];
+	} else {
+		// Read the two raw data registers
+		if(rc_i2c_read_word(config.i2c_bus, TEMP_OUT_H, &adc)<0){
+			fprintf(stderr,"failed to read IMU temperature registers\n");
+			return -1;
+		}
 	}
 	// convert to real units
 	data->temp = 21.0 + adc/TEMP_SENSITIVITY;
 	return 0;
 }
-
 
 int __reset_mpu(void)
 {
@@ -463,7 +487,7 @@ int __check_who_am_i(void)
 
 int __set_accel_fsr(rc_mpu_accel_fsr_t fsr, rc_mpu_data_t* data)
 {
-	uint8_t c;
+	uint8_t c, tmp;
 	switch(fsr){
 	case ACCEL_FSR_2G:
 		c = ACCEL_FSR_CFG_2G;
@@ -485,14 +509,26 @@ int __set_accel_fsr(rc_mpu_accel_fsr_t fsr, rc_mpu_data_t* data)
 		fprintf(stderr,"invalid accel fsr\n");
 		return -1;
 	}
-	return rc_i2c_write_byte(config.i2c_bus, ACCEL_CONFIG, c);
+	
+	if(is_icm20948){
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
+		rc_i2c_read_byte(config.i2c_bus, ICM20948_ACCEL_CONFIG, &tmp);
+		tmp &= ~(0x06); // clear bits 2:1 (FSR)
+		tmp |= (c << 1); // insert new FSR
+		tmp |= 0x01; // ensure FCHOICE is active (Bit 0 = 1)
+		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_ACCEL_CONFIG, tmp);
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
+		return ret;
+	} else {
+		return rc_i2c_write_byte(config.i2c_bus, ACCEL_CONFIG, (c<<3));
+	}
 }
 
 
 
 int __set_gyro_fsr(rc_mpu_gyro_fsr_t fsr, rc_mpu_data_t* data)
 {
-	uint8_t c;
+	uint8_t c, tmp;
 	switch(fsr){
 	case GYRO_FSR_250DPS:
 		c = GYRO_FSR_CFG_250 | FCHOICE_B_DLPF_EN;
@@ -514,12 +550,25 @@ int __set_gyro_fsr(rc_mpu_gyro_fsr_t fsr, rc_mpu_data_t* data)
 		fprintf(stderr,"invalid gyro fsr\n");
 		return -1;
 	}
-	return rc_i2c_write_byte(config.i2c_bus, GYRO_CONFIG, c);
+
+	if(is_icm20948){
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
+		rc_i2c_read_byte(config.i2c_bus, ICM20948_GYRO_CONFIG_1, &tmp);
+		tmp &= ~(0x06); // clear bits 2:1 (FSR)
+		tmp |= (c << 1); // insert new FSR
+		tmp |= 0x01; // ensure FCHOICE is active (Bit 0 = 1)
+		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_GYRO_CONFIG_1, tmp);
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
+		return ret;
+	} else {
+		return rc_i2c_write_byte(config.i2c_bus, GYRO_CONFIG, (c<<3));
+	}
 }
 
 
 int __set_accel_dlpf(rc_mpu_accel_dlpf_t dlpf)
 {
+	uint8_t tmp;
 	uint8_t c = ACCEL_FCHOICE_1KHZ | BIT_FIFO_SIZE_1024;
 	switch(dlpf){
 	case ACCEL_DLPF_OFF:
@@ -550,13 +599,28 @@ int __set_accel_dlpf(rc_mpu_accel_dlpf_t dlpf)
 		fprintf(stderr,"invalid config.accel_dlpf\n");
 		return -1;
 	}
-	return rc_i2c_write_byte(config.i2c_bus, ACCEL_CONFIG_2, c);
+	if(is_icm20948){
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
+		rc_i2c_read_byte(config.i2c_bus, ICM20948_ACCEL_CONFIG, &tmp);
+		tmp &= ~(0x38); // clear bits 5:3 (DLPF)
+		tmp |= (c << 3); // insert new DLPF
+		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_ACCEL_CONFIG, tmp);
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
+		return ret;
+	} else {
+		c = ACCEL_FCHOICE_1KHZ | BIT_FIFO_SIZE_1024;
+			if(dlpf == ACCEL_DLPF_OFF) c = ACCEL_FCHOICE_4KHZ | BIT_FIFO_SIZE_1024;
+			else if(dlpf == ACCEL_DLPF_184) c |= 1;
+			else if(dlpf == ACCEL_DLPF_92) c |= 2;
+			return rc_i2c_write_byte(config.i2c_bus, ACCEL_CONFIG_2, c);
+	}
 }
 
 
 int __set_gyro_dlpf(rc_mpu_gyro_dlpf_t dlpf)
 {
-	uint8_t c = FIFO_MODE_REPLACE_OLD;
+	uint8_t tmp;
+	uint8_t c = 1;
 	switch(dlpf){
 	case GYRO_DLPF_OFF:
 		c |= 7; // not really off, but 3600Hz bandwith
@@ -586,7 +650,20 @@ int __set_gyro_dlpf(rc_mpu_gyro_dlpf_t dlpf)
 		fprintf(stderr,"invalid gyro_dlpf\n");
 		return -1;
 	}
-	return rc_i2c_write_byte(config.i2c_bus, CONFIG, c);
+
+	if(is_icm20948){
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
+		rc_i2c_read_byte(config.i2c_bus, ICM20948_GYRO_CONFIG_1, &tmp);
+		tmp &= ~(0x38); // clear bits 5:3 (DLPF)
+		tmp |= (c << 3); // insert new DLPF
+		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_GYRO_CONFIG_1, tmp);
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
+		return ret;
+	} else {
+		uint8_t c = FIFO_MODE_REPLACE_OLD;
+		if(dlpf == GYRO_DLPF_184) c |= 1;
+		return rc_i2c_write_byte(config.i2c_bus, CONFIG, c);
+	}
 }
 
 
@@ -1736,7 +1813,16 @@ int __mpu_set_sample_rate(int rate)
 		fprintf(stderr,"ERROR: in mpu_set_sample_rate, failed to write SMPLRT_DIV register\n");
 		return -1;
 	}
-	return 0;
+	
+	if(is_icm20948){
+		div = (1125/rate) - 1;
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
+		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_GYRO_SMPLRT_DIV, div);
+		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
+		return ret;
+	} else {
+		return rc_i2c_write_byte(config.i2c_bus, SMPLRT_DIV, div);
+	}
 }
 
 /**
