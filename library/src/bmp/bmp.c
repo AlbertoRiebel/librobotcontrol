@@ -7,11 +7,16 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <math.h>
 #include <unistd.h>
 #include <rc/i2c.h>
 #include <rc/bmp.h>
 #include <rc/time.h>
+#include <rc/model.h>
 #include "bmp_defs.h"
 
 #define BMP_BUS 2
@@ -38,37 +43,115 @@ static bmp280_cal_t rc_bmp280_cal;
 // init_flag: 0 = off, 1 = I2C mode, 2 = IIO mode
 static int rc_bmp280_init_flag = 0; 
 static char rc_iio_base_path[128];
+// file descriptors for the IIO channels, kept open between reads
+static int rc_iio_temp_fd = -1;
+static int rc_iio_press_fd = -1;
+
+// reads an IIO/sysfs attribute as a double. sysfs regenerates the value on
+// every read at offset 0, so the fd can stay open and be reused with pread
+static int __iio_read_double(int fd, double* out)
+{
+	char buf[64];
+	char* end;
+	ssize_t n = pread(fd, buf, sizeof(buf)-1, 0);
+	if(n<=0) return -1;
+	buf[n] = '\0';
+	*out = strtod(buf, &end);
+	if(end==buf) return -1;
+	return 0;
+}
+
+static void __iio_close(void)
+{
+	if(rc_iio_temp_fd>=0)  close(rc_iio_temp_fd);
+	if(rc_iio_press_fd>=0) close(rc_iio_press_fd);
+	rc_iio_temp_fd = -1;
+	rc_iio_press_fd = -1;
+}
+
+// best effort: write an integer to an IIO attribute. returns 0 on success
+static int __iio_write_int(const char* attr, int value)
+{
+	char path[256];
+	FILE* f;
+	int ret;
+	snprintf(path, sizeof(path), "%s%s", rc_iio_base_path, attr);
+	f = fopen(path, "w");
+	if(!f) return -1;
+	ret = (fprintf(f, "%d", value) < 0) ? -1 : 0;
+	if(fclose(f)!=0) ret = -1; // the driver reports invalid values on close/flush
+	return ret;
+}
+
+// looks for a barometer exposed by the kernel IIO subsystem and opens its
+// temperature and pressure channels. returns 0 if a usable device was found.
+static int __iio_init(rc_bmp_oversample_t oversample)
+{
+	int i, n, ratio;
+	char path[256];
+	char name_buf[64];
+	double tmp;
+	FILE* f;
+
+	__iio_close();
+
+	for(i=0; i<16; i++){
+		snprintf(path, sizeof(path), "/sys/bus/iio/devices/iio:device%d/name", i);
+		f = fopen(path, "r");
+		if(!f) continue;
+		name_buf[0] = '\0';
+		if(fgets(name_buf, sizeof(name_buf), f)==NULL) name_buf[0] = '\0';
+		fclose(f);
+		if(strstr(name_buf, "bmp")==NULL) continue;
+
+		snprintf(rc_iio_base_path, sizeof(rc_iio_base_path), "/sys/bus/iio/devices/iio:device%d/", i);
+
+		snprintf(path, sizeof(path), "%sin_temp_input", rc_iio_base_path);
+		rc_iio_temp_fd = open(path, O_RDONLY);
+		snprintf(path, sizeof(path), "%sin_pressure_input", rc_iio_base_path);
+		rc_iio_press_fd = open(path, O_RDONLY);
+
+		// make sure both channels really deliver data before committing
+		if(rc_iio_temp_fd>=0 && rc_iio_press_fd>=0 &&
+				__iio_read_double(rc_iio_temp_fd, &tmp)==0 &&
+				__iio_read_double(rc_iio_press_fd, &tmp)==0){
+			break;
+		}
+		fprintf(stderr,"WARNING: in rc_bmp_init, %s looks like a barometer but its channels can't be read\n", rc_iio_base_path);
+		__iio_close();
+	}
+	if(rc_iio_temp_fd<0 || rc_iio_press_fd<0) return -1;
+
+	// the oversample enum holds the BMP280 register bits (n<<2, n=1..5)
+	// which map to a ratio of 1,2,4,8,16. Temperature stays at x1 like in the
+	// I2C path. The filter setting has no equivalent here and is ignored.
+	// Failing to change these only means the driver defaults stay in effect.
+	n = ((int)oversample>>2) & 0x07;
+	ratio = (n>=1 && n<=5) ? (1<<(n-1)) : 1;
+	if(__iio_write_int("in_pressure_oversampling_ratio", ratio)<0){
+		fprintf(stderr,"WARNING: in rc_bmp_init, couldn't set pressure oversampling through IIO, using driver default\n");
+	}
+	__iio_write_int("in_temp_oversampling_ratio", 1); // optional attribute, ignore failure
+	return 0;
+}
 
 int rc_bmp_init(rc_bmp_oversample_t oversample, rc_bmp_filter_t filter)
 {
 	int i;
-	char name_path[128];
-	char name_buf[64];
-	FILE* fd;
-	int found_iio = 0;
-	
-	for(i = 0; i < 10; i++) {
-		snprintf(name_path, sizeof(name_path), "/sys/bus/iio/devices/iio:device%d/name", i);
-		fd = fopen(name_path, "r");
-		if(fd) {
-			if(fgets(name_buf, sizeof(name_buf), fd) != NULL) {
-				if(strstr(name_buf, "bmp") != NULL) {
-					snprintf(rc_iio_base_path, sizeof(rc_iio_base_path), "/sys/bus/iio/devices/iio:device%d/", i);
-					found_iio = 1;
-					fclose(fd);
-					break;
-				}
-			}
-			fclose(fd);
-		}
-	}
-	
-	if(found_iio) {
+
+	// on boards where the kernel owns the barometer (AI-64) it is exposed
+	// through IIO. Everywhere else fall through to the I2C driver below.
+	if(__iio_init(oversample)==0){
 		rc_bmp280_cal.sea_level_pa = DEFAULT_SEA_LEVEL_PA;
 		rc_bmp280_init_flag = 2; // IIO flag
-		return 0; 
+		return 0;
 	}
-	
+	if(rc_model()==MODEL_BB_AI64){
+		fprintf(stderr,"ERROR in rc_bmp_init: no IIO barometer found\n");
+		fprintf(stderr,"check that the robotics cape overlay is loaded and the kernel driver bound to it\n");
+		return -1;
+	}
+
 	// make sure the bus is not currently in use by another thread
 	// do not proceed to prevent interfering with that process
 	uint8_t buf[24];
@@ -190,6 +273,7 @@ int rc_bmp_power_off(void)
 {
 	// IIO power off block
 	if(rc_bmp280_init_flag == 2) {
+		__iio_close();
 		rc_bmp280_init_flag = 0;
 		return 0;
 	}
@@ -237,27 +321,20 @@ int rc_bmp_read(rc_bmp_data_t* data)
 
 	// IIO read block
 	if(rc_bmp280_init_flag == 2) {
-		char path[256];
-		FILE* fd;
 		double temp_raw, press_raw;
-		
-		snprintf(path, sizeof(path), "%sin_temp_input", rc_iio_base_path);
-		fd = fopen(path, "r");
-		if(!fd) return -1;
-		if(fscanf(fd, "%lf", &temp_raw) != 1) { fclose(fd); return -1; }
-		fclose(fd);
-		
+
+		// in_temp_input is in milli degrees C, in_pressure_input in kPa
+		if(__iio_read_double(rc_iio_temp_fd, &temp_raw)<0){
+			fprintf(stderr,"ERROR in rc_bmp_read, failed to read IIO temperature\n");
+			return -1;
+		}
+		if(__iio_read_double(rc_iio_press_fd, &press_raw)<0){
+			fprintf(stderr,"ERROR in rc_bmp_read, failed to read IIO pressure\n");
+			return -1;
+		}
 		data->temp_c = temp_raw / 1000.0;
-		
-		snprintf(path, sizeof(path), "%sin_pressure_input", rc_iio_base_path);
-		fd = fopen(path, "r");
-		if(!fd) return -1;
-		if(fscanf(fd, "%lf", &press_raw) != 1) { fclose(fd); return -1; }
-		fclose(fd);
-		
 		data->pressure_pa = press_raw * 1000.0;
 		data->alt_m = 44330.0 * (1.0 - pow((data->pressure_pa / rc_bmp280_cal.sea_level_pa), 0.1903));
-		
 		return 0;
 	}
 
