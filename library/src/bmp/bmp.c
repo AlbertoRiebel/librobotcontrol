@@ -9,9 +9,13 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <math.h>
+#include <time.h>
+#include <signal.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <rc/i2c.h>
 #include <rc/bmp.h>
@@ -42,7 +46,7 @@ typedef struct bmp280_cal_t{
 static bmp280_cal_t rc_bmp280_cal;
 // init_flag: 0 = off, 1 = I2C mode, 2 = IIO mode
 static int rc_bmp280_init_flag = 0; 
-static char rc_iio_base_path[128];
+static char rc_iio_base_path[320];
 // file descriptors for the IIO channels, kept open between reads
 static int rc_iio_temp_fd = -1;
 static int rc_iio_press_fd = -1;
@@ -72,7 +76,7 @@ static void __iio_close(void)
 // best effort: write an integer to an IIO attribute. returns 0 on success
 static int __iio_write_int(const char* attr, int value)
 {
-	char path[256];
+	char path[400];
 	FILE* f;
 	int ret;
 	snprintf(path, sizeof(path), "%s%s", rc_iio_base_path, attr);
@@ -83,52 +87,180 @@ static int __iio_write_int(const char* attr, int value)
 	return ret;
 }
 
+// ---------------------------------------------------------------------------
+// Background sampling (IIO mode)
+// One IIO read costs about 13 to 50 ms depending on the oversampling, which
+// would stall fast loops (e.g. an IMU callback). A helper thread keeps reading
+// the sensor and rc_bmp_read just returns the latest sample immediately.
+// ---------------------------------------------------------------------------
+#define BMP_IIO_GAP_MS		10	// pause between reads, keeps the shared I2C bus from being hogged
+#define BMP_IIO_MAX_AGE_MS	1000	// samples older than this are reported as an error
+
+typedef struct bmp_iio_sample_t{
+	double temp_c;
+	double pressure_pa;
+	double stamp_ms;	// CLOCK_MONOTONIC time when the sample was taken
+	int valid;
+}bmp_iio_sample_t;
+
+static bmp_iio_sample_t rc_iio_sample;
+static pthread_t rc_iio_thread;
+static int rc_iio_thread_started = 0;
+static int rc_iio_stop = 0;
+// protects rc_iio_sample and the sea level pressure
+static pthread_mutex_t rc_bmp_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static double __now_ms(void)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return t.tv_sec*1000.0 + t.tv_nsec/1e6;
+}
+
+// takes one sample from the IIO channels. returns 0 on success
+static int __iio_sample(void)
+{
+	double t, p;
+	if(__iio_read_double(rc_iio_temp_fd, &t)<0) return -1;
+	if(__iio_read_double(rc_iio_press_fd, &p)<0) return -1;
+	pthread_mutex_lock(&rc_bmp_mutex);
+	rc_iio_sample.temp_c = t/1000.0;		// in_temp_input is in milli degrees C
+	rc_iio_sample.pressure_pa = p*1000.0;	// in_pressure_input is in kPa
+	rc_iio_sample.stamp_ms = __now_ms();
+	rc_iio_sample.valid = 1;
+	pthread_mutex_unlock(&rc_bmp_mutex);
+	return 0;
+}
+
+static void* __iio_thread(void* arg)
+{
+	struct timespec ts;
+	(void)arg;
+	while(!__atomic_load_n(&rc_iio_stop, __ATOMIC_ACQUIRE)){
+		// if a read fails the old sample simply ages and rc_bmp_read reports it
+		__iio_sample();
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		ts.tv_nsec += BMP_IIO_GAP_MS*1000000L;
+		if(ts.tv_nsec>=1000000000L){
+			ts.tv_sec++;
+			ts.tv_nsec -= 1000000000L;
+		}
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+	}
+	return NULL;
+}
+
+// takes a first sample synchronously (so rc_bmp_read works right after init)
+// and then starts the background thread. returns 0 on success
+static int __iio_start(void)
+{
+	sigset_t all, old;
+	int ret;
+
+	pthread_mutex_lock(&rc_bmp_mutex);
+	rc_iio_sample.valid = 0;
+	pthread_mutex_unlock(&rc_bmp_mutex);
+	if(__iio_sample()<0) return -1;
+
+	__atomic_store_n(&rc_iio_stop, 0, __ATOMIC_RELEASE);
+	// block signals while creating the thread so they are always delivered
+	// to the main thread, as in the rest of the library
+	sigfillset(&all);
+	pthread_sigmask(SIG_BLOCK, &all, &old);
+	ret = pthread_create(&rc_iio_thread, NULL, __iio_thread, NULL);
+	pthread_sigmask(SIG_SETMASK, &old, NULL);
+	if(ret!=0){
+		fprintf(stderr,"ERROR in rc_bmp_init, failed to start the barometer sampling thread\n");
+		return -1;
+	}
+	rc_iio_thread_started = 1;
+	return 0;
+}
+
+static void __iio_stop(void)
+{
+	if(rc_iio_thread_started){
+		__atomic_store_n(&rc_iio_stop, 1, __ATOMIC_RELEASE);
+		pthread_join(rc_iio_thread, NULL);
+		rc_iio_thread_started = 0;
+	}
+}
+
+// names of the IIO devices seen by the last scan, for the error message
+static char rc_iio_scan_log[256];
+
 // looks for a barometer exposed by the kernel IIO subsystem and opens its
 // temperature and pressure channels. returns 0 if a usable device was found.
 static int __iio_init(rc_bmp_oversample_t oversample)
 {
-	int i, n, ratio;
-	char path[256];
+	int n, ratio, ok;
+	char path[400];
 	char name_buf[64];
 	double tmp;
 	FILE* f;
+	DIR* dir;
+	struct dirent* ent;
 
 	__iio_close();
+	rc_iio_scan_log[0] = '\0';
 
-	for(i=0; i<16; i++){
-		snprintf(path, sizeof(path), "/sys/bus/iio/devices/iio:device%d/name", i);
-		f = fopen(path, "r");
-		if(!f) continue;
-		name_buf[0] = '\0';
-		if(fgets(name_buf, sizeof(name_buf), f)==NULL) name_buf[0] = '\0';
-		fclose(f);
-		if(strstr(name_buf, "bmp")==NULL) continue;
+	dir = opendir("/sys/bus/iio/devices");
+	if(dir){
+		// scan every iio:deviceN, whatever its number is
+		while((ent = readdir(dir)) != NULL){
+			if(strncmp(ent->d_name, "iio:device", 10)!=0) continue;
 
-		snprintf(rc_iio_base_path, sizeof(rc_iio_base_path), "/sys/bus/iio/devices/iio:device%d/", i);
+			snprintf(path, sizeof(path), "/sys/bus/iio/devices/%s/name", ent->d_name);
+			f = fopen(path, "r");
+			if(!f) continue;
+			name_buf[0] = '\0';
+			if(fgets(name_buf, sizeof(name_buf), f)==NULL) name_buf[0] = '\0';
+			fclose(f);
+			name_buf[strcspn(name_buf, "\r\n")] = '\0';
 
-		snprintf(path, sizeof(path), "%sin_temp_input", rc_iio_base_path);
-		rc_iio_temp_fd = open(path, O_RDONLY);
-		snprintf(path, sizeof(path), "%sin_pressure_input", rc_iio_base_path);
-		rc_iio_press_fd = open(path, O_RDONLY);
+			// remember what we saw, only for the error message
+			n = (int)strlen(rc_iio_scan_log);
+			if((int)sizeof(rc_iio_scan_log)-n > 100){
+				snprintf(rc_iio_scan_log+n, sizeof(rc_iio_scan_log)-n, " %.40s=%.40s", ent->d_name, name_buf);
+			}
 
-		// make sure both channels really deliver data before committing
-		if(rc_iio_temp_fd>=0 && rc_iio_press_fd>=0 &&
-				__iio_read_double(rc_iio_temp_fd, &tmp)==0 &&
-				__iio_read_double(rc_iio_press_fd, &tmp)==0){
-			break;
+			if(strstr(name_buf, "bmp")==NULL) continue;
+
+			snprintf(rc_iio_base_path, sizeof(rc_iio_base_path), "/sys/bus/iio/devices/%s/", ent->d_name);
+			snprintf(path, sizeof(path), "%sin_temp_input", rc_iio_base_path);
+			rc_iio_temp_fd = open(path, O_RDONLY);
+			snprintf(path, sizeof(path), "%sin_pressure_input", rc_iio_base_path);
+			rc_iio_press_fd = open(path, O_RDONLY);
+
+			// make sure both channels really deliver data before committing
+			if(rc_iio_temp_fd>=0 && rc_iio_press_fd>=0 &&
+					__iio_read_double(rc_iio_temp_fd, &tmp)==0 &&
+					__iio_read_double(rc_iio_press_fd, &tmp)==0){
+				break;
+			}
+			fprintf(stderr,"WARNING: in rc_bmp_init, %s looks like a barometer but its channels can't be read\n", rc_iio_base_path);
+			__iio_close();
 		}
-		fprintf(stderr,"WARNING: in rc_bmp_init, %s looks like a barometer but its channels can't be read\n", rc_iio_base_path);
-		__iio_close();
+		closedir(dir);
 	}
 	if(rc_iio_temp_fd<0 || rc_iio_press_fd<0) return -1;
 
 	// the oversample enum holds the BMP280 register bits (n<<2, n=1..5)
-	// which map to a ratio of 1,2,4,8,16. Temperature stays at x1 like in the
-	// I2C path. The filter setting has no equivalent here and is ignored.
-	// Failing to change these only means the driver defaults stay in effect.
+	// which map to a ratio of 1,2,4,8,16. The kernel driver may refuse some
+	// ratios (the AI-64 bmp380 driver rejects x16), so fall back to the next
+	// lower one until it accepts. Temperature stays at x1 like in the I2C path.
+	// The filter setting has no equivalent here and is ignored.
+	// If nothing can be changed the driver defaults stay in effect.
 	n = ((int)oversample>>2) & 0x07;
 	ratio = (n>=1 && n<=5) ? (1<<(n-1)) : 1;
-	if(__iio_write_int("in_pressure_oversampling_ratio", ratio)<0){
+	ok = 0;
+	for(; ratio>=1; ratio>>=1){
+		if(__iio_write_int("in_pressure_oversampling_ratio", ratio)==0){
+			ok = 1;
+			break;
+		}
+	}
+	if(!ok){
 		fprintf(stderr,"WARNING: in rc_bmp_init, couldn't set pressure oversampling through IIO, using driver default\n");
 	}
 	__iio_write_int("in_temp_oversampling_ratio", 1); // optional attribute, ignore failure
@@ -141,13 +273,28 @@ int rc_bmp_init(rc_bmp_oversample_t oversample, rc_bmp_filter_t filter)
 
 	// on boards where the kernel owns the barometer (AI-64) it is exposed
 	// through IIO. Everywhere else fall through to the I2C driver below.
+	// if init is called again, shut the previous IIO session down first
+	if(rc_bmp280_init_flag == 2){
+		__iio_stop();
+		__iio_close();
+		rc_bmp280_init_flag = 0;
+	}
 	if(__iio_init(oversample)==0){
+		if(__iio_start()<0){
+			fprintf(stderr,"ERROR in rc_bmp_init, failed to start reading the IIO barometer\n");
+			__iio_stop();
+			__iio_close();
+			return -1;
+		}
+		pthread_mutex_lock(&rc_bmp_mutex);
 		rc_bmp280_cal.sea_level_pa = DEFAULT_SEA_LEVEL_PA;
+		pthread_mutex_unlock(&rc_bmp_mutex);
 		rc_bmp280_init_flag = 2; // IIO flag
 		return 0;
 	}
 	if(rc_model()==MODEL_BB_AI64){
 		fprintf(stderr,"ERROR in rc_bmp_init: no IIO barometer found\n");
+		fprintf(stderr,"IIO devices seen:%s\n", rc_iio_scan_log[0] ? rc_iio_scan_log : " (none)");
 		fprintf(stderr,"check that the robotics cape overlay is loaded and the kernel driver bound to it\n");
 		return -1;
 	}
@@ -273,6 +420,7 @@ int rc_bmp_power_off(void)
 {
 	// IIO power off block
 	if(rc_bmp280_init_flag == 2) {
+		__iio_stop();
 		__iio_close();
 		rc_bmp280_init_flag = 0;
 		return 0;
@@ -319,22 +467,28 @@ int rc_bmp_read(rc_bmp_data_t* data)
 		return -1;
 	}
 
-	// IIO read block
+	// IIO read block: return the latest sample taken by the background thread
 	if(rc_bmp280_init_flag == 2) {
-		double temp_raw, press_raw;
+		bmp_iio_sample_t smp;
+		double sea_level, age;
 
-		// in_temp_input is in milli degrees C, in_pressure_input in kPa
-		if(__iio_read_double(rc_iio_temp_fd, &temp_raw)<0){
-			fprintf(stderr,"ERROR in rc_bmp_read, failed to read IIO temperature\n");
+		pthread_mutex_lock(&rc_bmp_mutex);
+		smp = rc_iio_sample;
+		sea_level = rc_bmp280_cal.sea_level_pa;
+		pthread_mutex_unlock(&rc_bmp_mutex);
+
+		if(!smp.valid){
+			fprintf(stderr,"ERROR in rc_bmp_read, no barometer sample available yet\n");
 			return -1;
 		}
-		if(__iio_read_double(rc_iio_press_fd, &press_raw)<0){
-			fprintf(stderr,"ERROR in rc_bmp_read, failed to read IIO pressure\n");
+		age = __now_ms() - smp.stamp_ms;
+		if(age > BMP_IIO_MAX_AGE_MS){
+			fprintf(stderr,"ERROR in rc_bmp_read, barometer data is stale (%.0f ms old), IIO reads are failing\n", age);
 			return -1;
 		}
-		data->temp_c = temp_raw / 1000.0;
-		data->pressure_pa = press_raw * 1000.0;
-		data->alt_m = 44330.0 * (1.0 - pow((data->pressure_pa / rc_bmp280_cal.sea_level_pa), 0.1903));
+		data->temp_c = smp.temp_c;
+		data->pressure_pa = smp.pressure_pa;
+		data->alt_m = 44330.0 * (1.0 - pow((smp.pressure_pa / sea_level), 0.1903));
 		return 0;
 	}
 
@@ -423,6 +577,8 @@ int rc_bmp_set_sea_level_pressure_pa(double pa)
 		fprintf(stderr," pressure between 80,000 & 120,000 pascals.\n");
 		return -1;
 	}
+	pthread_mutex_lock(&rc_bmp_mutex);
 	rc_bmp280_cal.sea_level_pa = pa;
+	pthread_mutex_unlock(&rc_bmp_mutex);
 	return 0;
 }
