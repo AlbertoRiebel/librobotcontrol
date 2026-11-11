@@ -458,20 +458,301 @@ static int __icm_set_sample_rate(int rate)
 	return 0;
 }
 
-// The calibration files were made for the MPU-9250 registers, so the offsets
-// can't be pushed to the ICM-20948 yet. Nothing is written to the chip.
+/*******************************************************************************
+* ICM-20948 calibration
+*
+* The MPU-9250 pushes the gyro and accel offsets into hardware registers when
+* it is initialized. The ICM-20948 offsets are applied in software instead, by
+* subtracting them from the raw values as they are read. The calibration files
+* keep the same format as for the MPU-9250:
+*   gyro.cal : 3 integers, raw averages taken at the 250dps full scale
+*   accel.cal: 3 offsets (g) followed by 3 scales
+*******************************************************************************/
+static double icm_gyro_offset_dps[3] = {0.0, 0.0, 0.0};
+static double icm_accel_offset_g[3] = {0.0, 0.0, 0.0};
+
 static int __icm_load_gyro_calibration(void)
 {
-	fprintf(stderr,"NOTE: gyro calibration offsets are not applied on the ICM-20948 yet\n");
+	FILE* fd;
+	int x = 0, y = 0, z = 0;
+
+	fd = fopen(CALIBRATION_DIR GYRO_CAL_FILE, "r");
+	if(fd==NULL){
+		// calibration file doesn't exist yet, use zero offsets
+		fprintf(stderr,"WARNING: no gyro calibration data found\n");
+		fprintf(stderr,"Please run rc_calibrate_gyro\n\n");
+	}
+	else{
+		if(fscanf(fd,"%d\n%d\n%d\n", &x,&y,&z)!=3){
+			fprintf(stderr,"ERROR loading gyro offsets, calibration file empty or malformed\n");
+			fprintf(stderr,"please run rc_calibrate_gyro to make a new calibration file\n");
+			fprintf(stderr,"using default offsets for now\n");
+			x = 0;
+			y = 0;
+			z = 0;
+		}
+		fclose(fd);
+	}
+	// raw averages were taken at +-250dps full scale
+	icm_gyro_offset_dps[0] = x*250.0/32768.0;
+	icm_gyro_offset_dps[1] = y*250.0/32768.0;
+	icm_gyro_offset_dps[2] = z*250.0/32768.0;
 	return 0;
 }
 
 static int __icm_load_accel_calibration(void)
 {
+	FILE* fd;
+	double x,y,z,sx,sy,sz; // offsets and scales in xyz
+
+	// defaults if there is no usable calibration file
 	accel_lengths[0] = 1.0;
 	accel_lengths[1] = 1.0;
 	accel_lengths[2] = 1.0;
-	fprintf(stderr,"NOTE: accel calibration offsets are not applied on the ICM-20948 yet\n");
+	icm_accel_offset_g[0] = 0.0;
+	icm_accel_offset_g[1] = 0.0;
+	icm_accel_offset_g[2] = 0.0;
+
+	fd = fopen(CALIBRATION_DIR ACCEL_CAL_FILE, "r");
+	if(fd==NULL){
+		// calibration file doesn't exist yet
+		fprintf(stderr,"WARNING: no accelerometer calibration data found\n");
+		fprintf(stderr,"Please run rc_calibrate_accel\n\n");
+		return 0;
+	}
+	if(fscanf(fd,"%lf\n%lf\n%lf\n%lf\n%lf\n%lf\n", &x,&y,&z,&sx,&sy,&sz)!=6){
+		fprintf(stderr,"ERROR loading accel offsets, calibration file empty or malformed\n");
+		fprintf(stderr,"please run rc_calibrate_accel to make a new calibration file\n");
+		fprintf(stderr,"using default offsets for now\n");
+		fclose(fd);
+		return 0;
+	}
+	fclose(fd);
+	icm_accel_offset_g[0] = x;
+	icm_accel_offset_g[1] = y;
+	icm_accel_offset_g[2] = z;
+	accel_lengths[0] = sx;
+	accel_lengths[1] = sy;
+	accel_lengths[2] = sz;
+	return 0;
+}
+
+// Subtracts the calibration offsets from three raw big-endian 16 bit values
+// (the 6 bytes read from the chip). offsets are in physical units (g or deg/s)
+// and units_per_lsb converts them to raw counts for the current full scale.
+static void __icm_correct_raw(uint8_t* raw, const double* offsets, double units_per_lsb)
+{
+	int i;
+	long v;
+
+	if(units_per_lsb<=0.0) return; // full scale not configured yet
+	for(i=0;i<3;i++){
+		v = (long)(int16_t)(((uint16_t)raw[2*i]<<8) | raw[2*i+1]);
+		v -= lround(offsets[i]/units_per_lsb);
+		if(v>32767) v = 32767;	// saturate instead of wrapping around
+		if(v<-32768) v = -32768;
+		raw[2*i]   = (uint8_t)(((uint16_t)(int16_t)v)>>8);
+		raw[2*i+1] = (uint8_t)(((uint16_t)(int16_t)v)&0xFF);
+	}
+}
+
+// Polls the 6 data bytes starting at reg ICM_CAL_SAMPLES times at about 200Hz
+// and returns the average and standard deviation of each axis (raw counts).
+// The MPU-9250 routines use its FIFO for this, polling is simpler here.
+#define ICM_CAL_SAMPLES	100
+static int __icm_collect_samples(uint8_t reg, int32_t* avg, double* dev)
+{
+	uint8_t data[6];
+	int16_t v[ICM_CAL_SAMPLES][3];
+	int32_t sum[3] = {0, 0, 0};
+	double mean, var;
+	int i, j;
+
+	for(i=0;i<ICM_CAL_SAMPLES;i++){
+		if(rc_i2c_read_bytes(config.i2c_bus, reg, 6, data)<0){
+			fprintf(stderr,"ERROR: failed to read the ICM-20948 data registers\n");
+			return -1;
+		}
+		for(j=0;j<3;j++){
+			v[i][j] = (int16_t)(((uint16_t)data[2*j]<<8) | data[2*j+1]);
+			sum[j] += v[i][j];
+		}
+		rc_usleep(5000);
+	}
+	for(j=0;j<3;j++){
+		avg[j] = sum[j]/ICM_CAL_SAMPLES;
+		mean = (double)sum[j]/ICM_CAL_SAMPLES;
+		var = 0.0;
+		for(i=0;i<ICM_CAL_SAMPLES;i++) var += ((double)v[i][j]-mean)*((double)v[i][j]-mean);
+		dev[j] = sqrt(var/(ICM_CAL_SAMPLES-1));
+	}
+	return 0;
+}
+
+// Called by rc_mpu_calibrate_gyro_routine after the chip has been reset and
+// woken up, with the i2c bus claimed.
+static int __icm_calibrate_gyro_routine(rc_mpu_config_t conf)
+{
+	rc_mpu_data_t scratch; // only needed because the set fsr function fills in the scale factor
+	int32_t avg[3];
+	double dev[3];
+	int16_t offsets[3];
+
+	was_last_steady = 1;
+	// maximum sensitivity (250dps) and a narrow filter (about 50Hz) for low noise
+	if(__icm_set_gyro_fsr(GYRO_FSR_250DPS, &scratch)<0 || __icm_set_gyro_dlpf(GYRO_DLPF_41)<0){
+		fprintf(stderr,"ERROR in rc_mpu_calibrate_gyro_routine, failed to configure the ICM-20948\n");
+		rc_i2c_unlock_bus(conf.i2c_bus);
+		return -1;
+	}
+	rc_usleep(200000); // let the filter settle
+
+	while(1){
+		if(__icm_collect_samples(ICM20948_GYRO_XOUT_H, avg, dev)<0){
+			rc_i2c_unlock_bus(conf.i2c_bus);
+			return -1;
+		}
+		// try again if standard deviation is too high
+		if(dev[0]>GYRO_CAL_THRESH || dev[1]>GYRO_CAL_THRESH || dev[2]>GYRO_CAL_THRESH){
+			printf("Gyro data too noisy, put me down on a solid surface!\n");
+			printf("trying again\n");
+			was_last_steady = 0;
+			continue;
+		}
+		// this skips the first steady reading after a noisy reading
+		// to make sure IMU has settled after being picked up.
+		if(was_last_steady == 0){
+			was_last_steady = 1;
+			continue;
+		}
+		offsets[0] = (int16_t)avg[0];
+		offsets[1] = (int16_t)avg[1];
+		offsets[2] = (int16_t)avg[2];
+		// also check for values that are way out of bounds
+		if(abs(offsets[0])>GYRO_OFFSET_THRESH || abs(offsets[1])>GYRO_OFFSET_THRESH || abs(offsets[2])>GYRO_OFFSET_THRESH){
+			printf("Gyro data out of bounds, put me down on a solid surface!\n");
+			printf("trying again\n");
+			continue;
+		}
+		break;
+	}
+	// done with I2C
+	rc_i2c_unlock_bus(conf.i2c_bus);
+	if(__write_gyro_cal_to_disk(offsets)<0){
+		fprintf(stderr,"ERROR in rc_calibrate_gyro_routine, failed to write to disk\n");
+		return -1;
+	}
+	return 0;
+}
+
+// Called by rc_mpu_calibrate_accel_routine after the chip has been reset and
+// woken up, with the i2c bus claimed.
+static int __icm_calibrate_accel_routine(void)
+{
+	rc_mpu_data_t scratch;
+	int32_t avg_raw[6][3];
+	double dev[3];
+	int i, j;
+	const char* orientations[6] = {"Z pointing up", "Z pointing down", "X pointing up",
+					"X pointing down", "Y pointing up", "Y pointing down"};
+
+	// 2g full scale for maximum sensitivity (16384 LSB per g) and a narrow filter
+	if(__icm_set_accel_fsr(ACCEL_FSR_2G, &scratch)<0 || __icm_set_accel_dlpf(ACCEL_DLPF_41)<0){
+		fprintf(stderr,"ERROR in rc_mpu_calibrate_accel_routine, failed to configure the ICM-20948\n");
+		rc_i2c_unlock_bus(config.i2c_bus);
+		return -1;
+	}
+	rc_usleep(200000); // let the filter settle
+
+	for(i=0;i<6;i++){
+		// collect an orientation
+		printf("\nOrient %s and hold as still as possible\n", orientations[i]);
+		printf("When ready, press any key to sample accelerometer\n");
+		getchar();
+		was_last_steady = 0;
+		while(1){
+			if(__icm_collect_samples(ICM20948_ACCEL_XOUT_H, avg_raw[i], dev)<0){
+				rc_i2c_unlock_bus(config.i2c_bus);
+				return -1;
+			}
+			// try again if standard deviation is too high
+			if(dev[0]>ACCEL_CAL_THRESH || dev[1]>ACCEL_CAL_THRESH || dev[2]>ACCEL_CAL_THRESH){
+				was_last_steady = 0;
+				printf("data too noisy, please hold me still\n");
+				continue;
+			}
+			// skip the first steady reading after a noisy one so the IMU can settle
+			if(was_last_steady == 0){
+				was_last_steady = 1;
+				continue;
+			}
+			break;
+		}
+		printf("success\n");
+	}
+
+	// done with I2C for now
+	__icm_power_off();
+	rc_i2c_unlock_bus(config.i2c_bus);
+
+	// fit the ellipse
+	rc_matrix_t A = rc_matrix_empty();
+	rc_vector_t center = rc_vector_empty();
+	rc_vector_t lengths = rc_vector_empty();
+
+	if(rc_matrix_alloc(&A,6,3)){
+		fprintf(stderr,"ERROR: in rc_mpu_calibrate_accel_routine, failed to alloc data matrix\n");
+		return -1;
+	}
+	// convert to G and put in matrix
+	for(i=0;i<6;i++){
+		for(j=0;j<3;j++){
+			A.d[i][j] = (avg_raw[i][j]/16384.0);
+		}
+	}
+	if(rc_algebra_fit_ellipsoid(A,&center,&lengths)<0){
+		fprintf(stderr,"failed to fit ellipsoid to accelerometer data\n");
+		rc_matrix_free(&A);
+		return -1;
+	}
+	rc_matrix_free(&A);
+	// do some sanity checks to make sure data is reasonable
+	for(i=0;i<3;i++){
+		if(fabs(center.d[i])>0.3){
+			fprintf(stderr,"ERROR in rc_mpu_calibrate_accel_routine, center of fitted ellipsoid out of bounds\n");
+			fprintf(stderr,"most likely the unit was held in incorrect orientation during data collection\n");
+			rc_vector_free(&center);
+			rc_vector_free(&lengths);
+			return -1;
+		}
+		if(isnan(center.d[i]) || isnan(lengths.d[i])){
+			fprintf(stderr,"ERROR in rc_mpu_calibrate_accel_routine, data fitting produced NaN\n");
+			fprintf(stderr,"most likely the unit was held in incorrect orientation during data collection\n");
+			rc_vector_free(&center);
+			rc_vector_free(&lengths);
+			return -1;
+		}
+		if(lengths.d[i]>1.3 || lengths.d[i]<0.7){
+			fprintf(stderr,"ERROR in rc_mpu_calibrate_accel_routine, scale out of bounds\n");
+			fprintf(stderr,"most likely the unit was held in incorrect orientation during data collection\n");
+			rc_vector_free(&center);
+			rc_vector_free(&lengths);
+			return -1;
+		}
+	}
+	// print results
+	printf("\n");
+	printf("Offsets X: %7.3f Y: %7.3f Z: %7.3f\n", center.d[0], center.d[1], center.d[2]);
+	printf("Scales  X: %7.3f Y: %7.3f Z: %7.3f\n", lengths.d[0], lengths.d[1], lengths.d[2]);
+	// write to disk
+	if(__write_accel_cal_to_disk(center.d, lengths.d)==-1){
+		fprintf(stderr,"ERROR in rc_mpu_calibrate_accel_routine, failed to write to disk\n");
+		rc_vector_free(&center);
+		rc_vector_free(&lengths);
+		return -1;
+	}
+	rc_vector_free(&center);
+	rc_vector_free(&lengths);
 	return 0;
 }
 
@@ -620,6 +901,8 @@ int rc_mpu_read_accel(rc_mpu_data_t *data)
 	if(is_icm20948){
 		// ICM-20948 data registers are in bank 0, where the chip is always left
 		if(rc_i2c_read_bytes(config.i2c_bus, ICM20948_ACCEL_XOUT_H, 6, &raw[0])<0) return -1;
+		// calibration offsets are applied in software on the ICM-20948
+		__icm_correct_raw(raw, icm_accel_offset_g, data->accel_to_ms2/9.80665);
 	} else {
 		// Read the six raw data registers into data array
 		if(rc_i2c_read_bytes(config.i2c_bus, ACCEL_XOUT_H, 6, &raw[0])<0){
@@ -648,6 +931,8 @@ int rc_mpu_read_gyro(rc_mpu_data_t *data)
 	if(is_icm20948){
 		// ICM-20948 data registers are in bank 0, where the chip is always left
 		if(rc_i2c_read_bytes(config.i2c_bus, ICM20948_GYRO_XOUT_H, 6, &raw[0])<0) return -1;
+		// calibration offsets are applied in software on the ICM-20948
+		__icm_correct_raw(raw, icm_gyro_offset_dps, data->gyro_to_degs);
 	} else {
 		// Read the six raw data registers into data array
 		if(rc_i2c_read_bytes(config.i2c_bus, GYRO_XOUT_H, 6, &raw[0])<0){
@@ -3044,11 +3329,7 @@ int rc_mpu_calibrate_gyro_routine(rc_mpu_config_t conf)
 		fprintf(stderr,"ERROR in rc_mpu_calibrate_gyro_routine, failed to reset MPU9250\n");
 		return -1;
 	}
-	if(is_icm20948){
-		fprintf(stderr,"ERROR: gyro calibration is not supported on the ICM-20948 yet\n");
-		rc_i2c_unlock_bus(conf.i2c_bus);
-		return -1;
-	}
+	if(is_icm20948) return __icm_calibrate_gyro_routine(conf);
 
 	// set up the IMU specifically for calibration.
 	rc_i2c_write_byte(conf.i2c_bus, PWR_MGMT_1, 0x01);
@@ -3474,11 +3755,7 @@ int rc_mpu_calibrate_accel_routine(rc_mpu_config_t conf)
 		fprintf(stderr,"ERROR in rc_mpu_calibrate_accel_routine failed to reset MPU9250\n");
 		return -1;
 	}
-	if(is_icm20948){
-		fprintf(stderr,"ERROR: accel calibration is not supported on the ICM-20948 yet\n");
-		rc_i2c_unlock_bus(config.i2c_bus);
-		return -1;
-	}
+	if(is_icm20948) return __icm_calibrate_accel_routine();
 
 	// set up the IMU specifically for calibration.
 	rc_i2c_write_byte(config.i2c_bus, PWR_MGMT_1, 0x01);
