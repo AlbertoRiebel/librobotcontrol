@@ -394,4 +394,22 @@ identical but the latter has a different register map
 #define ICM20948_GYRO_CONFIG_1   0x01
 #define ICM20948_ACCEL_CONFIG    0x14
 
+// ICM-20948: additional registers and bits used by the driver code in mpu.c
+#define ICM20948_WHO_AM_I_VALUE		0xEA
+// bank 0
+#define ICM20948_ACCEL_XOUT_H		0x2D
+#define ICM20948_GYRO_XOUT_H		0x33
+#define ICM20948_TEMP_OUT_H		0x39
+// PWR_MGMT_1 bits (bank 0)
+#define ICM20948_DEVICE_RESET		0x80
+#define ICM20948_SLEEP			0x40
+#define ICM20948_CLKSEL_AUTO		0x01
+// bank 2: accel sample rate divider (12 bits, 1125Hz/(1+div))
+#define ICM20948_ACCEL_SMPLRT_DIV_1	0x10
+#define ICM20948_ACCEL_SMPLRT_DIV_2	0x11
+// bit fields shared by ICM20948_GYRO_CONFIG_1 and ICM20948_ACCEL_CONFIG (bank 2)
+#define ICM20948_FCHOICE_BIT		0x01	// 1 = digital low pass filter enabled
+#define ICM20948_FS_SEL_MASK		0x06	// full scale range, bits 2:1
+#define ICM20948_DLPFCFG_MASK		0x38	// filter configuration, bits 5:3
+
 #endif
