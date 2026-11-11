@@ -153,6 +153,328 @@ static int __data_fusion(rc_mpu_data_t* data);
 static int __mag_correct_orientation(double mag_vec[3]);
 
 
+/*******************************************************************************
+* ICM-20948 support
+*
+* Everything specific to the ICM-20948 lives in this section plus the
+* "if(is_icm20948)" early returns at the top of the matching MPU-9250
+* functions. The MPU-9250 code itself is left untouched.
+*
+* The ICM-20948 has 4 register banks selected through REG_BANK_SEL. Rule used
+* here: the chip is ALWAYS left in bank 0 when one of these functions returns
+* (also on errors), so the data read functions never need to select a bank.
+*******************************************************************************/
+
+static int __icm_select_bank(uint8_t bank)
+{
+	return rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, bank);
+}
+
+// read-modify-write one register that lives outside bank 0, then go back to
+// bank 0. clear_mask bits are cleared first, then set_bits are ORed in.
+static int __icm_update_reg(uint8_t bank, uint8_t reg, uint8_t clear_mask, uint8_t set_bits)
+{
+	uint8_t tmp = 0;
+	int ret = -1;
+
+	if(__icm_select_bank(bank)==0){
+		if(rc_i2c_read_byte(config.i2c_bus, reg, &tmp)>=0){
+			tmp = (uint8_t)((tmp & ~clear_mask) | set_bits);
+			if(rc_i2c_write_byte(config.i2c_bus, reg, tmp)==0) ret = 0;
+		}
+	}
+	if(__icm_select_bank(ICM20948_BANK_0)!=0) ret = -1;
+	return ret;
+}
+
+// write one register that lives outside bank 0, then go back to bank 0
+static int __icm_write_reg(uint8_t bank, uint8_t reg, uint8_t val)
+{
+	int ret = -1;
+
+	if(__icm_select_bank(bank)==0){
+		if(rc_i2c_write_byte(config.i2c_bus, reg, val)==0) ret = 0;
+	}
+	if(__icm_select_bank(ICM20948_BANK_0)!=0) ret = -1;
+	return ret;
+}
+
+// Finds out which IMU is connected and sets is_icm20948. Never fails because of
+// a chip that doesn't answer: in that case the flag stays 0 and the regular
+// MPU-9250 code reports the problem (and keeps its own retry logic).
+static int __detect_chip(void)
+{
+	uint8_t c = 0;
+	int i;
+
+	is_icm20948 = 0;
+	if(rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr)==-1){
+		fprintf(stderr,"ERROR detecting the IMU, failed to set i2c device adddress\n");
+		return -1;
+	}
+	// MPU-9250 family: who_am_i is at 0x75. Reading it is harmless on any chip.
+	for(i=0; i<2; i++){
+		if(rc_i2c_read_byte(config.i2c_bus, WHO_AM_I_MPU9250, &c)>=0) break;
+		rc_usleep(10000);
+	}
+	if(i==2) return 0;
+	if(c==0x68 || c==0x69 || c==0x70 || c==0x71 || c==0x73 || c==0x75) return 0;
+
+	// not an MPU, look for an ICM-20948. A previous run may have left it in
+	// another register bank. REG_BANK_SEL can be reached from every bank, so
+	// select bank 0 before reading who_am_i.
+	if(__icm_select_bank(ICM20948_BANK_0)!=0) return 0;
+	if(rc_i2c_read_byte(config.i2c_bus, ICM20948_WHO_AM_I, &c)<0) return 0;
+	if(c==ICM20948_WHO_AM_I_VALUE) is_icm20948 = 1;
+	return 0;
+}
+
+static int __icm_check_who_am_i(void)
+{
+	uint8_t c = 0;
+
+	if(__icm_select_bank(ICM20948_BANK_0)!=0){
+		fprintf(stderr,"i2c write failed selecting ICM-20948 register bank 0\n");
+		return -1;
+	}
+	if(rc_i2c_read_byte(config.i2c_bus, ICM20948_WHO_AM_I, &c)<0){
+		fprintf(stderr,"i2c_read_byte failed reading who_am_i register\n");
+		return -1;
+	}
+	if(c!=ICM20948_WHO_AM_I_VALUE){
+		fprintf(stderr,"invalid who_am_i register: 0x%x\n", c);
+		fprintf(stderr,"expected 0x%x for the ICM-20948\n", ICM20948_WHO_AM_I_VALUE);
+		return -1;
+	}
+	return 0;
+}
+
+// resets the chip and wakes it up. The ICM-20948 starts asleep after a reset.
+static int __icm_reset(void)
+{
+	// a previous run may have left another register bank selected
+	if(__icm_select_bank(ICM20948_BANK_0)!=0){
+		rc_usleep(10000);
+		if(__icm_select_bank(ICM20948_BANK_0)!=0){
+			fprintf(stderr,"ERROR resetting ICM-20948, I2C write failed\n");
+			return -1;
+		}
+	}
+	if(rc_i2c_write_byte(config.i2c_bus, ICM20948_PWR_MGMT_1, ICM20948_DEVICE_RESET)!=0){
+		fprintf(stderr,"ERROR resetting ICM-20948, I2C write to reset bit failed\n");
+		return -1;
+	}
+	rc_usleep(100000); // let the reset finish
+	// clear the sleep bit and use the automatically selected best clock
+	if(rc_i2c_write_byte(config.i2c_bus, ICM20948_PWR_MGMT_1, ICM20948_CLKSEL_AUTO)!=0){
+		fprintf(stderr,"ERROR resetting ICM-20948, failed to wake it up\n");
+		return -1;
+	}
+	rc_usleep(50000);
+	// accelerometer and gyroscope enabled on all axes
+	if(rc_i2c_write_byte(config.i2c_bus, ICM20948_PWR_MGMT_2, 0x00)!=0){
+		fprintf(stderr,"ERROR resetting ICM-20948, failed to enable the sensors\n");
+		return -1;
+	}
+	return 0;
+}
+
+static int __icm_power_off(void)
+{
+	rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
+	if(__icm_select_bank(ICM20948_BANK_0)!=0){
+		fprintf(stderr,"I2C write to ICM-20948 Failed\n");
+		return -1;
+	}
+	if(rc_i2c_write_byte(config.i2c_bus, ICM20948_PWR_MGMT_1, ICM20948_DEVICE_RESET)!=0){
+		rc_usleep(1000);
+		if(rc_i2c_write_byte(config.i2c_bus, ICM20948_PWR_MGMT_1, ICM20948_DEVICE_RESET)!=0){
+			fprintf(stderr,"I2C write to ICM-20948 Failed\n");
+			return -1;
+		}
+	}
+	rc_usleep(10000);
+	if(rc_i2c_write_byte(config.i2c_bus, ICM20948_PWR_MGMT_1, ICM20948_SLEEP | ICM20948_CLKSEL_AUTO)!=0){
+		fprintf(stderr,"I2C write to ICM-20948 Failed\n");
+		return -1;
+	}
+	return 0;
+}
+
+static int __icm_set_accel_fsr(rc_mpu_accel_fsr_t fsr, rc_mpu_data_t* data)
+{
+	uint8_t sel;
+
+	switch(fsr){
+	case ACCEL_FSR_2G:
+		sel = 0;
+		data->accel_to_ms2 = 9.80665*2.0/32768.0;
+		break;
+	case ACCEL_FSR_4G:
+		sel = 1;
+		data->accel_to_ms2 = 9.80665*4.0/32768.0;
+		break;
+	case ACCEL_FSR_8G:
+		sel = 2;
+		data->accel_to_ms2 = 9.80665*8.0/32768.0;
+		break;
+	case ACCEL_FSR_16G:
+		sel = 3;
+		data->accel_to_ms2 = 9.80665*16.0/32768.0;
+		break;
+	default:
+		fprintf(stderr,"invalid accel fsr\n");
+		return -1;
+	}
+	// ACCEL_FS_SEL is in bits 2:1 of the bank 2 ACCEL_CONFIG register
+	return __icm_update_reg(ICM20948_BANK_2, ICM20948_ACCEL_CONFIG, ICM20948_FS_SEL_MASK, (uint8_t)(sel<<1));
+}
+
+static int __icm_set_gyro_fsr(rc_mpu_gyro_fsr_t fsr, rc_mpu_data_t* data)
+{
+	uint8_t sel;
+
+	switch(fsr){
+	case GYRO_FSR_250DPS:
+		sel = 0;
+		data->gyro_to_degs = 250.0/32768.0;
+		break;
+	case GYRO_FSR_500DPS:
+		sel = 1;
+		data->gyro_to_degs = 500.0/32768.0;
+		break;
+	case GYRO_FSR_1000DPS:
+		sel = 2;
+		data->gyro_to_degs = 1000.0/32768.0;
+		break;
+	case GYRO_FSR_2000DPS:
+		sel = 3;
+		data->gyro_to_degs = 2000.0/32768.0;
+		break;
+	default:
+		fprintf(stderr,"invalid gyro fsr\n");
+		return -1;
+	}
+	// GYRO_FS_SEL is in bits 2:1 of the bank 2 GYRO_CONFIG_1 register
+	return __icm_update_reg(ICM20948_BANK_2, ICM20948_GYRO_CONFIG_1, ICM20948_FS_SEL_MASK, (uint8_t)(sel<<1));
+}
+
+// The filter bandwidths of the ICM-20948 are not the same as the MPU-9250's, so
+// each option of the library is mapped to the closest entry of the datasheet
+// table, keeping the order. The filter stays enabled (FCHOICE=1) in every case
+// so the sample rate dividers keep working.
+static int __icm_set_accel_dlpf(rc_mpu_accel_dlpf_t dlpf)
+{
+	uint8_t cfg;
+
+	switch(dlpf){
+	case ACCEL_DLPF_OFF:	// widest bandwidth available with the filter enabled
+	case ACCEL_DLPF_460:
+		cfg = 7;	// 473Hz
+		break;
+	case ACCEL_DLPF_184:
+		cfg = 1;	// 246Hz
+		break;
+	case ACCEL_DLPF_92:
+		cfg = 2;	// 111Hz
+		break;
+	case ACCEL_DLPF_41:
+		cfg = 3;	// 50Hz
+		break;
+	case ACCEL_DLPF_20:
+		cfg = 4;	// 24Hz
+		break;
+	case ACCEL_DLPF_10:
+		cfg = 5;	// 11.5Hz
+		break;
+	case ACCEL_DLPF_5:
+		cfg = 6;	// 5.7Hz
+		break;
+	default:
+		fprintf(stderr,"invalid accel_dlpf\n");
+		return -1;
+	}
+	return __icm_update_reg(ICM20948_BANK_2, ICM20948_ACCEL_CONFIG,
+			ICM20948_DLPFCFG_MASK | ICM20948_FCHOICE_BIT,
+			(uint8_t)((cfg<<3) | ICM20948_FCHOICE_BIT));
+}
+
+static int __icm_set_gyro_dlpf(rc_mpu_gyro_dlpf_t dlpf)
+{
+	uint8_t cfg;
+
+	switch(dlpf){
+	case GYRO_DLPF_OFF:	// widest bandwidth available with the filter enabled
+		cfg = 7;	// 361Hz
+		break;
+	case GYRO_DLPF_250:
+		cfg = 0;	// 197Hz
+		break;
+	case GYRO_DLPF_184:
+		cfg = 1;	// 152Hz
+		break;
+	case GYRO_DLPF_92:
+		cfg = 2;	// 120Hz
+		break;
+	case GYRO_DLPF_41:
+		cfg = 3;	// 51Hz
+		break;
+	case GYRO_DLPF_20:
+		cfg = 4;	// 24Hz
+		break;
+	case GYRO_DLPF_10:
+		cfg = 5;	// 11.6Hz
+		break;
+	case GYRO_DLPF_5:
+		cfg = 6;	// 5.7Hz
+		break;
+	default:
+		fprintf(stderr,"invalid gyro_dlpf\n");
+		return -1;
+	}
+	return __icm_update_reg(ICM20948_BANK_2, ICM20948_GYRO_CONFIG_1,
+			ICM20948_DLPFCFG_MASK | ICM20948_FCHOICE_BIT,
+			(uint8_t)((cfg<<3) | ICM20948_FCHOICE_BIT));
+}
+
+static int __icm_set_sample_rate(int rate)
+{
+	int div_g, div_a;
+
+	if(rate>1000 || rate<5){
+		fprintf(stderr,"ERROR: sample rate must be between 5 & 1000 on the ICM-20948\n");
+		return -1;
+	}
+	// gyro rate = 1100Hz/(1+div) with an 8 bit divider
+	// accel rate = 1125Hz/(1+div) with a 12 bit divider
+	div_g = (1100/rate) - 1;
+	div_a = (1125/rate) - 1;
+	if(__icm_write_reg(ICM20948_BANK_2, ICM20948_GYRO_SMPLRT_DIV, (uint8_t)div_g)<0 ||
+	   __icm_write_reg(ICM20948_BANK_2, ICM20948_ACCEL_SMPLRT_DIV_1, (uint8_t)((div_a>>8)&0x0F))<0 ||
+	   __icm_write_reg(ICM20948_BANK_2, ICM20948_ACCEL_SMPLRT_DIV_2, (uint8_t)(div_a&0xFF))<0){
+		fprintf(stderr,"ERROR: in mpu_set_sample_rate, failed to write the ICM-20948 sample rate dividers\n");
+		return -1;
+	}
+	return 0;
+}
+
+// The calibration files were made for the MPU-9250 registers, so the offsets
+// can't be pushed to the ICM-20948 yet. Nothing is written to the chip.
+static int __icm_load_gyro_calibration(void)
+{
+	fprintf(stderr,"NOTE: gyro calibration offsets are not applied on the ICM-20948 yet\n");
+	return 0;
+}
+
+static int __icm_load_accel_calibration(void)
+{
+	accel_lengths[0] = 1.0;
+	accel_lengths[1] = 1.0;
+	accel_lengths[2] = 1.0;
+	fprintf(stderr,"NOTE: accel calibration offsets are not applied on the ICM-20948 yet\n");
+	return 0;
+}
+
 rc_mpu_config_t rc_mpu_default_config(void)
 {
 	rc_mpu_config_t conf;
@@ -241,6 +563,8 @@ int rc_mpu_initialize(rc_mpu_data_t *data, rc_mpu_config_t conf)
 
 	// Set sample rate = 1000/(1 + SMPLRT_DIV)
 	// here we use a divider of 0 for 1khz sample
+	// (MPU-9250 register: the ICM-20948 already starts with sample rate dividers of 0)
+	if(!is_icm20948)
 	if(rc_i2c_write_byte(config.i2c_bus, SMPLRT_DIV, 0x00)){
 		fprintf(stderr,"I2C bus write error\n");
 		rc_i2c_unlock_bus(config.i2c_bus);
@@ -294,10 +618,8 @@ int rc_mpu_read_accel(rc_mpu_data_t *data)
 	rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
 
 	if(is_icm20948){
-		// ICM20948's accel. data is on bank 0
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
-		// ICM20948 addresses are different: 0x2D (ACCEL_XOUT_H)
-		if(rc_i2c_read_bytes(config.i2c_bus, 0x2D, 6, &raw[0])<0) return -1;
+		// ICM-20948 data registers are in bank 0, where the chip is always left
+		if(rc_i2c_read_bytes(config.i2c_bus, ICM20948_ACCEL_XOUT_H, 6, &raw[0])<0) return -1;
 	} else {
 		// Read the six raw data registers into data array
 		if(rc_i2c_read_bytes(config.i2c_bus, ACCEL_XOUT_H, 6, &raw[0])<0){
@@ -324,10 +646,8 @@ int rc_mpu_read_gyro(rc_mpu_data_t *data)
 	rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
 
 	if(is_icm20948){
-		// ICM20948's gyro data is on bank 0
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
-		// ICM20948 address: 0x33 (GYRO_XOUT_H)
-		if(rc_i2c_read_bytes(config.i2c_bus, 0x33, 6, &raw[0])<0) return -1;
+		// ICM-20948 data registers are in bank 0, where the chip is always left
+		if(rc_i2c_read_bytes(config.i2c_bus, ICM20948_GYRO_XOUT_H, 6, &raw[0])<0) return -1;
 	} else {
 		// Read the six raw data registers into data array
 		if(rc_i2c_read_bytes(config.i2c_bus, GYRO_XOUT_H, 6, &raw[0])<0){
@@ -348,6 +668,10 @@ int rc_mpu_read_gyro(rc_mpu_data_t *data)
 
 int rc_mpu_read_mag(rc_mpu_data_t* data)
 {
+	if(is_icm20948){
+		fprintf(stderr,"ERROR: the magnetometer is not supported on the ICM-20948 yet\n");
+		return -1;
+	}
 	uint8_t raw[7];
 	int16_t adc[3];
 	double factory_cal_data[3];
@@ -426,10 +750,10 @@ int rc_mpu_read_temp(rc_mpu_data_t* data)
 	rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
 
 	if(is_icm20948){
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
-		// ICM20948: 0x39 (TEMP_OUT_H)
-		if(rc_i2c_read_bytes(config.i2c_bus, 0x39, 2, raw)<0) return -1;
-		adc = (raw[0] << 8) | raw[1];
+		if(rc_i2c_read_bytes(config.i2c_bus, ICM20948_TEMP_OUT_H, 2, raw)<0) return -1;
+		// the raw value is signed; same scale and offset as the MPU-9250
+		data->temp = 21.0 + (int16_t)((raw[0]<<8) | raw[1]) / TEMP_SENSITIVITY;
+		return 0;
 	} else {
 		// Read the two raw data registers
 		if(rc_i2c_read_word(config.i2c_bus, TEMP_OUT_H, &adc)<0){
@@ -446,6 +770,9 @@ int __reset_mpu(void)
 {
 	// disable the interrupt to prevent it from doing things while we reset
 	imu_shutdown_flag = 1;
+	// find out which IMU is connected, the ICM-20948 has its own reset sequence
+	if(__detect_chip()<0) return -1;
+	if(is_icm20948) return __icm_reset();
 	// set the device address
 	if(rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr)==-1){
 		fprintf(stderr,"ERROR resetting MPU, failed to set i2c device adddress\n");
@@ -467,6 +794,7 @@ int __reset_mpu(void)
 
 int __check_who_am_i(void)
 {
+	if(is_icm20948) return __icm_check_who_am_i();
 	uint8_t c;
 	//check the who am i register to make sure the chip is alive
 	if(rc_i2c_read_byte(config.i2c_bus, WHO_AM_I_MPU9250, &c)<0){
@@ -487,7 +815,8 @@ int __check_who_am_i(void)
 
 int __set_accel_fsr(rc_mpu_accel_fsr_t fsr, rc_mpu_data_t* data)
 {
-	uint8_t c, tmp;
+	if(is_icm20948) return __icm_set_accel_fsr(fsr, data);
+	uint8_t c;
 	switch(fsr){
 	case ACCEL_FSR_2G:
 		c = ACCEL_FSR_CFG_2G;
@@ -509,26 +838,15 @@ int __set_accel_fsr(rc_mpu_accel_fsr_t fsr, rc_mpu_data_t* data)
 		fprintf(stderr,"invalid accel fsr\n");
 		return -1;
 	}
-	
-	if(is_icm20948){
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
-		rc_i2c_read_byte(config.i2c_bus, ICM20948_ACCEL_CONFIG, &tmp);
-		tmp &= ~(0x06); // clear bits 2:1 (FSR)
-		tmp |= (c << 1); // insert new FSR
-		tmp |= 0x01; // ensure FCHOICE is active (Bit 0 = 1)
-		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_ACCEL_CONFIG, tmp);
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
-		return ret;
-	} else {
-		return rc_i2c_write_byte(config.i2c_bus, ACCEL_CONFIG, (c<<3));
-	}
+	return rc_i2c_write_byte(config.i2c_bus, ACCEL_CONFIG, c);
 }
 
 
 
 int __set_gyro_fsr(rc_mpu_gyro_fsr_t fsr, rc_mpu_data_t* data)
 {
-	uint8_t c, tmp;
+	if(is_icm20948) return __icm_set_gyro_fsr(fsr, data);
+	uint8_t c;
 	switch(fsr){
 	case GYRO_FSR_250DPS:
 		c = GYRO_FSR_CFG_250 | FCHOICE_B_DLPF_EN;
@@ -550,25 +868,13 @@ int __set_gyro_fsr(rc_mpu_gyro_fsr_t fsr, rc_mpu_data_t* data)
 		fprintf(stderr,"invalid gyro fsr\n");
 		return -1;
 	}
-
-	if(is_icm20948){
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
-		rc_i2c_read_byte(config.i2c_bus, ICM20948_GYRO_CONFIG_1, &tmp);
-		tmp &= ~(0x06); // clear bits 2:1 (FSR)
-		tmp |= (c << 1); // insert new FSR
-		tmp |= 0x01; // ensure FCHOICE is active (Bit 0 = 1)
-		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_GYRO_CONFIG_1, tmp);
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
-		return ret;
-	} else {
-		return rc_i2c_write_byte(config.i2c_bus, GYRO_CONFIG, (c<<3));
-	}
+	return rc_i2c_write_byte(config.i2c_bus, GYRO_CONFIG, c);
 }
 
 
 int __set_accel_dlpf(rc_mpu_accel_dlpf_t dlpf)
 {
-	uint8_t tmp;
+	if(is_icm20948) return __icm_set_accel_dlpf(dlpf);
 	uint8_t c = ACCEL_FCHOICE_1KHZ | BIT_FIFO_SIZE_1024;
 	switch(dlpf){
 	case ACCEL_DLPF_OFF:
@@ -599,28 +905,14 @@ int __set_accel_dlpf(rc_mpu_accel_dlpf_t dlpf)
 		fprintf(stderr,"invalid config.accel_dlpf\n");
 		return -1;
 	}
-	if(is_icm20948){
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
-		rc_i2c_read_byte(config.i2c_bus, ICM20948_ACCEL_CONFIG, &tmp);
-		tmp &= ~(0x38); // clear bits 5:3 (DLPF)
-		tmp |= (c << 3); // insert new DLPF
-		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_ACCEL_CONFIG, tmp);
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
-		return ret;
-	} else {
-		c = ACCEL_FCHOICE_1KHZ | BIT_FIFO_SIZE_1024;
-			if(dlpf == ACCEL_DLPF_OFF) c = ACCEL_FCHOICE_4KHZ | BIT_FIFO_SIZE_1024;
-			else if(dlpf == ACCEL_DLPF_184) c |= 1;
-			else if(dlpf == ACCEL_DLPF_92) c |= 2;
-			return rc_i2c_write_byte(config.i2c_bus, ACCEL_CONFIG_2, c);
-	}
+	return rc_i2c_write_byte(config.i2c_bus, ACCEL_CONFIG_2, c);
 }
 
 
 int __set_gyro_dlpf(rc_mpu_gyro_dlpf_t dlpf)
 {
-	uint8_t tmp;
-	uint8_t c = 1;
+	if(is_icm20948) return __icm_set_gyro_dlpf(dlpf);
+	uint8_t c = FIFO_MODE_REPLACE_OLD;
 	switch(dlpf){
 	case GYRO_DLPF_OFF:
 		c |= 7; // not really off, but 3600Hz bandwith
@@ -650,25 +942,16 @@ int __set_gyro_dlpf(rc_mpu_gyro_dlpf_t dlpf)
 		fprintf(stderr,"invalid gyro_dlpf\n");
 		return -1;
 	}
-
-	if(is_icm20948){
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
-		rc_i2c_read_byte(config.i2c_bus, ICM20948_GYRO_CONFIG_1, &tmp);
-		tmp &= ~(0x38); // clear bits 5:3 (DLPF)
-		tmp |= (c << 3); // insert new DLPF
-		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_GYRO_CONFIG_1, tmp);
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
-		return ret;
-	} else {
-		uint8_t c = FIFO_MODE_REPLACE_OLD;
-		if(dlpf == GYRO_DLPF_184) c |= 1;
-		return rc_i2c_write_byte(config.i2c_bus, CONFIG, c);
-	}
+	return rc_i2c_write_byte(config.i2c_bus, CONFIG, c);
 }
 
 
 int __init_magnetometer(int cal_mode)
 {
+	if(is_icm20948){
+		fprintf(stderr,"ERROR: the magnetometer is not supported on the ICM-20948 yet\n");
+		return -1;
+	}
 	uint8_t raw[3];	// calibration data stored here
 
 	// --- POWER AND TIMING PATCH START ---
@@ -751,6 +1034,7 @@ int __init_magnetometer(int cal_mode)
 
 int __power_off_magnetometer(void)
 {
+	if(is_icm20948) return 0; // the ICM-20948 magnetometer is not used yet and starts powered down
 	rc_i2c_set_device_address(config.i2c_bus, config.i2c_addr);
 	// Enable i2c bypass to allow talking to magnetometer
 	if(__mpu_set_bypass(1)){
@@ -785,6 +1069,10 @@ int rc_mpu_power_off(void)
 		pthread_mutex_destroy(&read_mutex);
 		pthread_cond_destroy(&tap_condition);
 		pthread_mutex_destroy(&tap_mutex);
+	}
+	if(is_icm20948){
+		// no magnetometer support yet, nothing to shut down first
+		return __icm_power_off();
 	}
 	// shutdown magnetometer first if on since that requires
 	// the imu to the on for bypass to work
@@ -890,6 +1178,12 @@ int rc_mpu_initialize_dmp(rc_mpu_data_t *data, rc_mpu_config_t conf)
 		return -1;
 	}
 	if(__check_who_am_i()){
+		rc_i2c_unlock_bus(config.i2c_bus);
+		return -1;
+	}
+	if(is_icm20948){
+		fprintf(stderr,"ERROR: DMP mode is not supported on the ICM-20948 yet\n");
+		rc_gpio_cleanup(config.gpio_interrupt_pin_chip, config.gpio_interrupt_pin);
 		rc_i2c_unlock_bus(config.i2c_bus);
 		return -1;
 	}
@@ -1800,6 +2094,7 @@ int __set_int_enable(unsigned char enable)
  */
 int __mpu_set_sample_rate(int rate)
 {
+	if(is_icm20948) return __icm_set_sample_rate(rate);
 	if(rate>1000 || rate<4){
 		fprintf(stderr,"ERROR: sample rate must be between 4 & 1000\n");
 		return -1;
@@ -1813,16 +2108,7 @@ int __mpu_set_sample_rate(int rate)
 		fprintf(stderr,"ERROR: in mpu_set_sample_rate, failed to write SMPLRT_DIV register\n");
 		return -1;
 	}
-	
-	if(is_icm20948){
-		div = (1125/rate) - 1;
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_2);
-		int ret = rc_i2c_write_byte(config.i2c_bus, ICM20948_GYRO_SMPLRT_DIV, div);
-		rc_i2c_write_byte(config.i2c_bus, ICM20948_REG_BANK_SEL, ICM20948_BANK_0);
-		return ret;
-	} else {
-		return rc_i2c_write_byte(config.i2c_bus, SMPLRT_DIV, div);
-	}
+	return 0;
 }
 
 /**
@@ -2346,6 +2632,7 @@ int __data_fusion(rc_mpu_data_t* data)
  */
 int __load_gyro_calibration(void)
 {
+	if(is_icm20948) return __icm_load_gyro_calibration();
 	FILE* fd;
 	uint8_t data[6];
 	int x,y,z;
@@ -2458,6 +2745,7 @@ int __load_mag_calibration(void)
  */
 int __load_accel_calibration(void)
 {
+	if(is_icm20948) return __icm_load_accel_calibration();
 	FILE* fd;
 	uint8_t raw[6] = {0,0,0,0,0,0};
 	double x,y,z,sx,sy,sz; // offsets and scales in xyz
@@ -2756,6 +3044,11 @@ int rc_mpu_calibrate_gyro_routine(rc_mpu_config_t conf)
 		fprintf(stderr,"ERROR in rc_mpu_calibrate_gyro_routine, failed to reset MPU9250\n");
 		return -1;
 	}
+	if(is_icm20948){
+		fprintf(stderr,"ERROR: gyro calibration is not supported on the ICM-20948 yet\n");
+		rc_i2c_unlock_bus(conf.i2c_bus);
+		return -1;
+	}
 
 	// set up the IMU specifically for calibration.
 	rc_i2c_write_byte(conf.i2c_bus, PWR_MGMT_1, 0x01);
@@ -2927,6 +3220,11 @@ int rc_mpu_calibrate_mag_routine(rc_mpu_config_t conf)
 	// reset device, reset all registers
 	if(__reset_mpu()<0){
 		fprintf(stderr,"ERROR: failed to reset MPU9250\n");
+		return -1;
+	}
+	if(is_icm20948){
+		fprintf(stderr,"ERROR: magnetometer calibration is not supported on the ICM-20948 yet\n");
+		rc_i2c_unlock_bus(config.i2c_bus);
 		return -1;
 	}
 	//check the who am i register to make sure the chip is alive
@@ -3174,6 +3472,11 @@ int rc_mpu_calibrate_accel_routine(rc_mpu_config_t conf)
 	// reset device, reset all registers
 	if(__reset_mpu()<0){
 		fprintf(stderr,"ERROR in rc_mpu_calibrate_accel_routine failed to reset MPU9250\n");
+		return -1;
+	}
+	if(is_icm20948){
+		fprintf(stderr,"ERROR: accel calibration is not supported on the ICM-20948 yet\n");
+		rc_i2c_unlock_bus(config.i2c_bus);
 		return -1;
 	}
 
